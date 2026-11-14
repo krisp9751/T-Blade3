@@ -676,7 +676,7 @@ module file_operations
         close(100)
 
         202 format((A7,2x),(A4,11x),4(A14,3x),(A13,1x),2(A6,5x),(A13,2x),(A10,2x),(A10,1x),(A11),2x,A17,2x,A12,2x,A17)
-        201     format(1x,I3,4x,(f11.8,4x),4(sf14.8,3x),3x,8(f11.8,1x),7x,f11.8,4x,A5)
+        201     format(1x,I3,4x,(f11.8,4x),4(s,f14.8,3x),3x,8(f11.8,1x),7x,f11.8,4x,A5)
 
 
 
