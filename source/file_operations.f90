@@ -1,6 +1,18 @@
 module file_operations
     implicit none
 
+    !
+    ! In-memory copy of the (x, y, z) section derivatives, so that callers
+    ! such as the ESP UDP (udpTblade.c) can read them without going through
+    ! derivative_files/. One entry per parameter group, same numbering as
+    ! write_xyz_der_files (1 = sweep, 2 = lean, ..., 7 = NACA thickness).
+    ! d(1:3, nspan, np, nparams, ncp), already scaled by scf.
+    !
+    type xyz_der_group
+        real, allocatable :: d(:,:,:,:,:)
+    end type xyz_der_group
+    type(xyz_der_group), save :: xyz_der_groups(7)
+
 
 
     contains
@@ -1983,6 +1995,106 @@ module file_operations
 
 
     end subroutine write_xyz_der_files
+    !---------------------------------------------------------------------------
+
+
+
+
+    !
+    ! Keep a copy of the (x, y, z) section derivatives for one parameter
+    ! group in memory (see xyz_der_groups above)
+    !
+    ! Input parameters: iparam  - parameter group (as in write_xyz_der_files)
+    !                   dx, dy, dz - derivatives (nspan, np, nparams, ncp)
+    !
+    !---------------------------------------------------------------------------
+    subroutine store_xyz_ders (iparam, dx, dy, dz)
+        use globvar,            only: scf
+
+        integer,                intent(in)      :: iparam
+        real,                   intent(in)      :: dx(:,:,:,:)
+        real,                   intent(in)      :: dy(:,:,:,:)
+        real,                   intent(in)      :: dz(:,:,:,:)
+
+        if (iparam < 1 .or. iparam > 7) return
+        if (allocated(xyz_der_groups(iparam)%d)) deallocate(xyz_der_groups(iparam)%d)
+        allocate(xyz_der_groups(iparam)%d(3, size(dx,1), size(dx,2), size(dx,3), size(dx,4)))
+        xyz_der_groups(iparam)%d(1,:,:,:,:) = scf * dx
+        xyz_der_groups(iparam)%d(2,:,:,:,:) = scf * dy
+        xyz_der_groups(iparam)%d(3,:,:,:,:) = scf * dz
+
+    end subroutine store_xyz_ders
+    !---------------------------------------------------------------------------
+
+
+
+
+    !
+    ! C interface: sizes of a stored derivative group
+    !
+    ! Output: dims = [nspan, np, nparams, ncp], all zero if not available
+    ! Returns 0 on success, -1 if the group has not been stored
+    !
+    !---------------------------------------------------------------------------
+    function tb_get_xyz_ders_size (iparam, dims) result(ierr) bind(C, name = 'tb_get_xyz_ders_size')
+        use iso_c_binding,      only: c_int
+
+        integer(c_int), value,  intent(in)      :: iparam
+        integer(c_int),         intent(out)     :: dims(4)
+        integer(c_int)                          :: ierr
+
+        dims = 0
+        ierr = -1
+        if (iparam < 1 .or. iparam > 7) return
+        if (.not. allocated(xyz_der_groups(iparam)%d)) return
+        dims(1) = size(xyz_der_groups(iparam)%d, 2)
+        dims(2) = size(xyz_der_groups(iparam)%d, 3)
+        dims(3) = size(xyz_der_groups(iparam)%d, 4)
+        dims(4) = size(xyz_der_groups(iparam)%d, 5)
+        ierr    = 0
+
+    end function tb_get_xyz_ders_size
+    !---------------------------------------------------------------------------
+
+
+
+
+    !
+    ! C interface: derivatives of all section points wrt control point (k, l)
+    ! of parameter group iparam (k and l are 1-based, as in the
+    ! derivative_files/xyz_ders_<iparam>_<k>_<l>.dat names)
+    !
+    ! Output: buf(3*nspan*np) ordered section-major, then point, then x/y/z,
+    !         i.e. the same order as the rows of the derivative files
+    ! Returns 0 on success, -1 on bad indices or missing group
+    !
+    !---------------------------------------------------------------------------
+    function tb_get_xyz_ders (iparam, k, l, buf) result(ierr) bind(C, name = 'tb_get_xyz_ders')
+        use iso_c_binding,      only: c_int, c_double
+
+        integer(c_int), value,  intent(in)      :: iparam, k, l
+        real(c_double),         intent(out)     :: buf(*)
+        integer(c_int)                          :: ierr
+
+        ! Local variables
+        integer                                 :: i, j, n
+
+        ierr = -1
+        if (iparam < 1 .or. iparam > 7) return
+        if (.not. allocated(xyz_der_groups(iparam)%d)) return
+        if (k < 1 .or. k > size(xyz_der_groups(iparam)%d, 4)) return
+        if (l < 1 .or. l > size(xyz_der_groups(iparam)%d, 5)) return
+
+        n = 0
+        do i = 1, size(xyz_der_groups(iparam)%d, 2)
+            do j = 1, size(xyz_der_groups(iparam)%d, 3)
+                buf(n+1:n+3) = xyz_der_groups(iparam)%d(:, i, j, k, l)
+                n = n + 3
+            end do
+        end do
+        ierr = 0
+
+    end function tb_get_xyz_ders
     !---------------------------------------------------------------------------
 
 

@@ -872,6 +872,15 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
     call write_xyz_der_files (6, dx_dcurv, dy_dcurv, dz_dcurv)
     call write_xyz_der_files (7, dx_dthk, dy_dthk, dz_dthk)
 
+    ! Keep in-memory copies for the ESP UDP (see store_xyz_ders)
+    call store_xyz_ders (1, dx_dsweep, dy_dsweep, dz_dsweep)
+    call store_xyz_ders (2, dx_dlean, dy_dlean, dz_dlean)
+    call store_xyz_ders (3, dx_dinbeta, dy_dinbeta, dz_dinbeta)
+    call store_xyz_ders (4, dx_doutbeta, dy_doutbeta, dz_doutbeta)
+    call store_xyz_ders (5, dx_dcm, dy_dcm, dz_dcm)
+    call store_xyz_ders (6, dx_dcurv, dy_dcurv, dz_dcurv)
+    call store_xyz_ders (7, dx_dthk, dy_dthk, dz_dthk)
+
 
 
     ! format statements

@@ -29,7 +29,15 @@
  */
 
 #define NUMUDPARGS 40
+
+/* private data (per UDP instance) used by udpSensitivity; see tbData_T */
+#define FREEUDPDATA(A)       freePrivateData(A)
+#define COPYUDPDATA(SRC,TGT) copyPrivateData(SRC,TGT)
+static int freePrivateData(void *data);
+static int copyPrivateData(/*@null@*/void *src, void **tgt);
+
 #include "udpUtilities.h"
+#include "egads_dot.h"
 
 #ifdef  DEBUG
    #define DPRINT0(A)         printf(A)
@@ -100,16 +108,16 @@ static char*  argNames[NUMUDPARGS] = {"ncp",                "switch",           
                                       "span_chord",         "span_thk_c",           "span_u_max",       "span_curv_ctrl",       
                                       "span_thk_ctrl",      "offsets",              "hub_inf_offset",   "tip_inf_offset",       
                                       "naca_le_radius",     "naca_u_max",           "naca_t_max",       "naca_t_te",    };
-static int    argTypes[NUMUDPARGS] = {ATTRINT,      ATTRINT,    ATTRSTRING, ATTRSTRING, 
-                                      ATTRSTRING,   ATTRREAL,   ATTRREAL,   ATTRREAL,   
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,   
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL, 
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,    
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL, 
-                                      ATTRREAL,     ATTRREAL,   ATTRREAL,   ATTRREAL,   };
+static int    argTypes[NUMUDPARGS] = {ATTRINT    , ATTRINT    , ATTRSTRING , ATTRSTRING,
+                                      ATTRSTRING , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREAL   , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREAL   , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREAL   , ATTRREAL   , ATTRREALSEN, ATTRREALSEN,
+                                      ATTRREAL   , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREALSEN, ATTRREALSEN, ATTRREAL   , ATTRREAL,
+                                      ATTRREAL   , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREAL   , ATTRREAL   , ATTRREAL   , ATTRREAL,
+                                      ATTRREALSEN, ATTRREALSEN, ATTRREALSEN, ATTRREALSEN, };
 static int    argIdefs[NUMUDPARGS] = {33,       0,          0,          0,
                                       0,        0,          0,          0,
                                       0,        0,          0,          0,
@@ -142,6 +150,59 @@ static double argDdefs[NUMUDPARGS] = {33.,      0.,         0.,         0.,
 static int   *tb_NumUdp = NULL;
 static udp_T *tb_udps   = NULL;
 #define TB_UDP_LOCALS  int *NumUdp = tb_NumUdp; udp_T *udps = tb_udps;
+
+/* ---------------------------------------------------------------------
+   Analytic sensitivities
+
+   T-Blade3 computes d(x,y,z)/d(control point) for every section point
+   (bladestack.f90) and keeps them in memory (file_operations.f90,
+   store_xyz_ders).  udpExecute copies the ones for the arguments below
+   into the instance's private data.  The blade surface is an EGADS cubic
+   fit through the section points, so EG_approximate_dot gives its exact
+   sensitivity for any combination of argument dots.  udpSensitivity puts
+   those dots on the BSPLINE surface(s) of the Body's blade Faces (private
+   copies would be deleted by OpenCSM's sweep of unattached egos) and
+   evaluates them at the requested Face/Edge/Node points.
+   --------------------------------------------------------------------- */
+
+#define TB_FITTOL   1.0e-8      /* EG_approximate convergence (absolute, model units) */
+#define TB_NSENS    8
+#ifndef TB_PCTOL
+#define TB_PCTOL    1.0e-3      /* EG_otherCurve tolerance for the hub/tip P-curves */
+#endif
+#ifndef TB_NCPREV
+#define TB_NCPREV   6           /* control points of the fallback hub/tip r(x) fit */
+#endif
+
+/* UDP argument  <->  T-Blade3 derivative group / parameter (as in xyz_ders_<group>_<k>_<cp>.dat) */
+static const int tbSensArg[  TB_NSENS] = {24, 25, 18, 19, 36, 37, 38, 39};
+static const int tbSensGroup[TB_NSENS] = { 1,  2,  1,  2,  7,  7,  7,  7};
+static const int tbSensK[    TB_NSENS] = { 2,  2,  1,  1,  1,  2,  3,  4};
+/*  24 span_del_m          (sweep  value,    group 1, k=2)
+    25 span_del_theta      (lean   value,    group 2, k=2)
+    18 span_del_m_ctrl     (sweep  span loc, group 1, k=1)
+    19 span_del_theta_ctrl (lean   span loc, group 2, k=1)
+    36..39 naca_le_radius, naca_u_max, naca_t_max, naca_t_te (group 7, k=1..4) */
+
+typedef struct {
+    int     nsec;                 /* number of sections (v direction) */
+    int     npnt;                 /* points per section (u direction) */
+    double  *xyz;                 /* 3*npnt*nsec section points, u fastest */
+    int     nder[TB_NSENS];       /* control points with derivatives (0 = none) */
+    double  *der[TB_NSENS];       /* nder*3*npnt*nsec: d(xyz)/d(arg[i]) */
+    double  *lastdot;             /* argument dots used for the current surface dots */
+    int     nlastdot;
+} tbData_T;
+
+/* Fortran (bind(C)) accessors in file_operations.f90 */
+extern int tb_get_xyz_ders_size(int iparam, int dims[4]);
+extern int tb_get_xyz_ders(     int iparam, int k, int l, double buf[]);
+
+static int tbFetchDerivatives(tbData_T *tb, udp_T *udp);
+static int tbStreamlineCap(ego context, const char *which, const char *casename,
+                           ego eiso, int npnt, ego *esurface);
+static int tbEdgeVel(ego ebody, ego eedge, double t, double vel[]);
+static int tbNodeVel(ego ebody, ego enode, double vel[]);
 #include <sys/stat.h>
 #include <stdio.h>
 #include <assert.h>
@@ -301,13 +362,15 @@ udpExecute(ego  context,                /* (in)  EGADS context */
 
 #define NPNT 1000
     int     ichar, nsec, isec, npnt, ipnt, jpnt, nn, periodic, senses[4];
-    int     oclass, mtype, nbody, nface, *senses2;
-    double  vlimits[2], xyz[3*NPNT], rms, xyzNode[18], *xr0=NULL;
-    double  trange[3], tt, data[18], data2[18], swap;
+    int     oclass, mtype, nbody, nface, *senses2, npnt0=0, sizes[2];
+    double  vlimits[2], xyz[3*NPNT], rms, xyzNode[18], *xr0=NULL, *xyzAll=NULL;
+    double  trange[3], tt, data[18], data2[18], swap, srange[4], umid, vlo, vhi;
+    tbData_T *tb=NULL;
+    ego     eiso=NULL;
     double  toler = 1e-4;
     char    filename[257], auxname[257], *auxptr, nextline[257], casename[257];
     FILE    *fp, *fpSrc=NULL, *fpTgt=NULL;
-    ego     enodes[5], eedges[4], eloop, *ecurves=NULL;
+    ego     enodes[5], eedges[4], eloop;
     ego     ecurve, epcurve, esurface, esurf, eref, efaces[4], emodel, *ebodys;
 
     DPRINT1("udpExecute(context=%llx)\n", (long long)context);
@@ -479,275 +542,90 @@ udpExecute(ego  context,                /* (in)  EGADS context */
 #endif 
     }
 
-    ecurves = (ego*) malloc(nsec*sizeof(ego));
-    if (ecurves == NULL) {
-        printf(" udpExecute: MALLOC(ecurves) error\n");
-        status = EGADS_MALLOC;
-        goto cleanup;
-    }
-
-    /* initialize (to eliminate scan-build warnings) */
-    trange[0] = trange[1] = trange[2] = 0;
-
-    /* process each of the section files */
+    /* read all of the sections into one (npnt x nsec) grid */
     for (isec = 1; isec <= nsec; isec++) {
-
-        /* read the input files */
         snprintf(filename, 256, "sec%d.%s.dat", isec, casename);
         printf("reading: %s\n", filename);
 
         fp = fopen(filename, "r");
         if (fp == NULL) {
-            printf("could not open \"%s\"\n", filename);
-            status = -9999;
+            printf(" udpExecute: could not open \"%s\"\n", filename);
+            status = EGADS_NOTFOUND;
             goto cleanup;
         }
 
         npnt = 0;
         while (1) {
-            nn = fscanf(fp, "%lf %lf %lf\n", &(xyz[3*npnt]), &(xyz[3*npnt+1]), &(xyz[3*npnt+2]));
-            if (nn < 3) {
-                break;
-            } else if (npnt >= NPNT) {
-                printf("recompile with larger NPNT\n");
-                status = -9999;
+            if (npnt >= NPNT) {
+                printf(" udpExecute: more than NPNT=%d points in \"%s\"\n", NPNT, filename);
+                fclose(fp);
+                status = EGADS_RANGERR;
                 goto cleanup;
-            } else {
-                npnt++;
             }
+            nn = fscanf(fp, "%lf %lf %lf\n", &(xyz[3*npnt]), &(xyz[3*npnt+1]), &(xyz[3*npnt+2]));
+            if (nn < 3) break;
+            npnt++;
         }
-        printf("section %2d has %d points\n", isec, npnt);
+        fclose(fp);
+        DPRINT2("section %2d has %d points\n", isec, npnt);
 
-        assert(npnt > 0);
-        xr0 = (double*) malloc(3*npnt*sizeof(double));
-        if (xr0 == NULL) {
-            status = EGADS_MALLOC;
+        if (isec == 1) {
+            npnt0  = npnt;
+            if (npnt0 < 4) {
+                printf(" udpExecute: section 1 has only %d points\n", npnt0);
+                status = EGADS_RANGERR;
+                goto cleanup;
+            }
+            xyzAll = (double*) malloc(3*npnt0*nsec*sizeof(double));
+            if (xyzAll == NULL) {
+                status = EGADS_MALLOC;
+                goto cleanup;
+            }
+        } else if (npnt != npnt0) {
+            printf(" udpExecute: section %d has %d points but section 1 has %d\n", isec, npnt, npnt0);
+            status = EGADS_RANGERR;
             goto cleanup;
         }
-
-//$$$        /* if the hub or tip, generate a fit for the body of revolution */
-//$$$        if (isec == 1 || isec == nsec) {
-//$$$            for (ipnt = 0; ipnt < npnt; ipnt++) {
-//$$$                xr0[3*ipnt  ] =      xyz[3*ipnt  ];
-//$$$                xr0[3*ipnt+1] = sqrt(xyz[3*ipnt+1]*xyz[3*ipnt+1]
-//$$$                                    +xyz[3*ipnt+2]*xyz[3*ipnt+2]);
-//$$$                xr0[3*ipnt+2] = 0;
-//$$$            }
-//$$$
-//$$$            /* order the points based upon x (using SLOW bubble sort) */
-//$$$            for (ipnt = 0; ipnt < npnt-1; ipnt++) {
-//$$$                for (jpnt = ipnt+1; jpnt < npnt; jpnt++) {
-//$$$                    if (xr0[3*ipnt] > xr0[3*jpnt]) {
-//$$$                        swap = xr0[3*ipnt  ]; xr0[3*ipnt  ] = xr0[3*jpnt  ]; xr0[3*jpnt  ] = swap;
-//$$$                        swap = xr0[3*ipnt+1]; xr0[3*ipnt+1] = xr0[3*jpnt+1]; xr0[3*jpnt+1] = swap;
-//$$$                        swap = xr0[3*ipnt+2]; xr0[3*ipnt+2] = xr0[3*jpnt+2]; xr0[3*jpnt+2] = swap;
-//$$$                    }
-//$$$                }
-//$$$            }
-//$$$
-//$$$            /* arbitrarily extend surface beyond xmin and xmax */
-//$$$            if (npnt > 25) {
-//$$$                xr0[3] =     xr0[0];
-//$$$                xr0[4] =     xr0[1];
-//$$$                xr0[5] =     xr0[2];
-//$$$                xr0[0] = 2 * xr0[3] - xr0[30];
-//$$$                xr0[1] = 2 * xr0[4] - xr0[31];
-//$$$                xr0[2] = 2 * xr0[5] - xr0[32];
-//$$$
-//$$$                xr0[3*npnt-6] =     xr0[3*npnt-3];
-//$$$                xr0[3*npnt-5] =     xr0[3*npnt-2];
-//$$$                xr0[3*npnt-4] =     xr0[3*npnt-1];
-//$$$                xr0[3*npnt-3] = 2 * xr0[3*npnt-6] - xr0[3*npnt-30];
-//$$$                xr0[3*npnt-2] = 2 * xr0[3*npnt-5] - xr0[3*npnt-29];
-//$$$                xr0[3*npnt-1] = 2 * xr0[3*npnt-4] - xr0[3*npnt-28];
-//$$$            }
-//$$$
-//$$$            /* fit r(x) */
-//$$$            status = EG_fitBspline(context, npnt, 1, xr0, 6, &ecurve, &rms);
-//$$$#ifdef DEBUG 
-//$$$            printf("EG_fitBspline -> status=%d, rms=%f\n", status, rms);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$#ifdef GRAFIC
-//$$$            /* plot the fit */
-//$$$            status = plotCurve(npnt, xr0, ecurve);
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$#endif
-//$$$
-//$$$            /* generate a body of revolution */
-//$$$            data[0] = data[1] = data[2] = 0;
-//$$$            data[3] = 1;
-//$$$            data[4] = data[5] = 0;
-//$$$            status = EG_makeGeometry(context, SURFACE, REVOLUTION, ecurve,
-//$$$                                     NULL, data, &esurface);
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeGeometry -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$        }
-//$$$
-//$$$#ifdef GRAFIC
-//$$$        /* compute and plot r(x) */
-//$$$        if (isec == 1 || isec == nsec) {
-//$$$            int   io_kbd=5, io_scr=6, indgr=1+4+16+64;
-//$$$            int   nline=1, ilin[1], isym[1], nper[1];
-//$$$            float xplot[250], rplot[250];
-//$$$
-//$$$            for (ipnt = 0; ipnt < npnt; ipnt++) {
-//$$$                xplot[ipnt] = xr0[3*ipnt  ];
-//$$$                rplot[ipnt] = xr0[3*ipnt+1];
-//$$$            }
-//$$$            ilin[0] = -GR_SOLID;
-//$$$            isym[0] =  GR_CIRCLE;
-//$$$            nper[0] = npnt;
-//$$$
-//$$$            grinit_(&io_kbd, &io_scr, "rad(x)", strlen("rad(x)"));
-//$$$            grline_(ilin, isym, &nline, "~x~r~ ", &indgr,
-//$$$                    xplot, rplot, nper, strlen("~x~r "));
-//$$$        }
-//$$$#endif
-
-        /* generate a fit of the curve */
-        status = EG_fitBspline(context, npnt, 3, xyz, NCP(numUdp), &(ecurves[isec-1]), &rms);
-        DPRINT2("EG_fitBspline -> status=%d, rms=%f\n", status, rms);
-        if (status != EGADS_SUCCESS) goto cleanup;
-
-#ifdef GRAFIC
-        /* plot the fit */
-        status = plotCurve(npnt, xyz, ecurves[isec-1]);
-        if (status != EGADS_SUCCESS) goto cleanup;
-#endif
-
-        /* get the range of the Curves */
-        status = EG_getRange(ecurves[isec-1], trange, &periodic);
-        trange[2] =  trange[1];
-        trange[1] = (trange[0] + trange[2]) / 2;
-
-        DPRINT1("EG_getRange -> status=%d\n", status);
-        DPRINT3("trange =%f %f %f\n", trange[0], trange[1], trange[2]);
-        if (status != EGADS_SUCCESS) goto cleanup;
-
-//$$$        /* special processing for hub and tip */
-//$$$        if (isec == 1 || isec == nsec) {
-//$$$
-//$$$            /* create the two Nodes for this section */
-//$$$            status = EG_evaluate(ecurves[isec-1], trange, xyzNode);
-//$$$#ifdef DEBUG
-//$$$            printf("EG_evaluate -> status=%d, xyzNode=%f %f %f\n",
-//$$$                   status, xyzNode[0], xyzNode[1], xyzNode[2]);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            status = EG_makeTopology(context, NULL, NODE, 0,
-//$$$                                     xyzNode, 0, NULL, NULL, &(enodes[0]));
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(node0) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            status = EG_evaluate(ecurves[isec-1], &(trange[1]), xyzNode);
-//$$$#ifdef DEBUG
-//$$$            printf("EG_evaluate -> status=%d, xyzNode=%f %f %f\n",
-//$$$                   status, xyzNode[0], xyzNode[1], xyzNode[2]);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            status = EG_makeTopology(context, NULL, NODE, 0,
-//$$$                                     xyzNode, 0, NULL, NULL, &(enodes[1]));
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(node1) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            enodes[2] = enodes[0];
-//$$$
-//$$$            /* create the two Edges for this section */
-//$$$            status = EG_makeTopology(context, ecurves[isec-1], EDGE, TWONODE,
-//$$$                                     trange, 2, &(enodes[0]), NULL, &(eedges[0]));
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(edge0) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            status = EG_makeTopology(context, ecurves[isec-1], EDGE, TWONODE,
-//$$$                                     &(trange[1]), 2, &(enodes[1]), NULL, &(eedges[1]));
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(edge1) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            /* create the Loop for this section */
-//$$$            status = EG_otherCurve(esurface, ecurves[isec-1], toler, &epcurve);
-//$$$#ifdef DEBUG
-//$$$            printf("EG_otherCurve -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            eedges[2] = epcurve;
-//$$$            eedges[3] = epcurve;
-//$$$
-//$$$            senses[0] = SFORWARD;
-//$$$            senses[1] = SFORWARD;
-//$$$            status = EG_makeTopology(context, esurface, LOOP, CLOSED,
-//$$$                                     NULL, 2, eedges, senses, &eloop);
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(loop) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$
-//$$$            if (isec == 1) {
-//$$$                status = EG_makeTopology(context, esurface, FACE, SFORWARD,
-//$$$                                         NULL, 1, &eloop, senses, &(efaces[2]));
-//$$$            } else {
-//$$$                status = EG_makeTopology(context, esurface, FACE, SFORWARD,
-//$$$                                         NULL, 1, &eloop, senses, &(efaces[3]));
-//$$$            }
-//$$$#ifdef DEBUG
-//$$$            printf("EG_makeTopology(face) -> status=%d\n", status);
-//$$$#endif
-//$$$            if (status != EGADS_SUCCESS) goto cleanup;
-//$$$        }
-
-        fclose(fp);
-
-        free(xr0);
-        xr0 = NULL;
+        memcpy(&(xyzAll[3*npnt0*(isec-1)]), xyz, 3*npnt0*sizeof(double));
     }
+    npnt = npnt0;
 
-    /* create the blade surface */
-    status = EG_skinning(nsec, ecurves, 3, &esurf);
-    DPRINT1("EG_skinning -> status=%d\n", status);
-
-#ifdef DEBUG
-    printf("esurf:\n");
-    ocsmPrintEgo(esurf);
-#endif
+    /* create the blade surface: an EGADS cubic fit through all section
+       points (u along each section, v across sections), so that
+       EG_approximate_dot gives its exact sensitivity */
+    sizes[0] = npnt0;
+    sizes[1] = nsec;
+    status = EG_approximate(context, 0, TB_FITTOL, sizes, xyzAll, &esurf);
+    DPRINT1("EG_approximate -> status=%d\n", status);
     if (status != EGADS_SUCCESS) goto cleanup;
 
+    status = EG_getRange(esurf, srange, &periodic);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    umid = (srange[0] + srange[1]) / 2;
+    vlo  = srange[2] + vlimits[0] * (srange[3] - srange[2]);
+    vhi  = srange[2] + vlimits[1] * (srange[3] - srange[2]);
+
     /* break the surface into 2 Faces */
-    data[0] = trange[0];
-    data[1] = trange[1];
-    data[2] = vlimits[0];
-    data[3] = vlimits[1];
+    data[0] = srange[0];
+    data[1] = umid;
+    data[2] = vlo;
+    data[3] = vhi;
     DPRINT4("data(limits)=%f, %f, %f, %f\n", data[0], data[1], data[2], data[3]);
-    
+
     status = EG_makeFace(esurf, SFORWARD, data, &(efaces[0]));
     DPRINT1("EG_makeFace -> status=%d\n", status);
     if (status != EGADS_SUCCESS) goto cleanup;
 
-    data[0] = trange[1];
-    data[1] = trange[2];
-    data[2] = vlimits[0];
-    data[3] = vlimits[1];
-    DPRINT4("data(limits)=%f, %f, %f, %f\n", data[0], data[1], data[2], data[3]);
+    data[0] = umid;
+    data[1] = srange[1];
 
     status = EG_makeFace(esurf, SFORWARD, data, &(efaces[1]));
     DPRINT1("EG_makeFace -> status=%d\n", status);
     if (status != EGADS_SUCCESS) goto cleanup;
 
     nface = 2;
-    
+
     /* generate the hub and tip Faces */
     for (isec = 1; isec <= nsec; isec += (nsec-1)) {
         if (isec == 1    && vlimits[0] > 0) continue;
@@ -755,89 +633,107 @@ udpExecute(ego  context,                /* (in)  EGADS context */
 
         DPRINT1("making end-cap to produce Face[%d]\n", nface);
 
-        /* extract the Edges at constant V on the two Faces */
+        /* the section curve at constant V on the blade surface */
         if (isec == 1) {
-            status = EG_isoCline(esurf, VISO, vlimits[0], &ecurve);
+            status = EG_isoCline(esurf, VISO, vlo, &eiso);
         } else {
-            status = EG_isoCline(esurf, VISO, vlimits[1], &ecurve);
+            status = EG_isoCline(esurf, VISO, vhi, &eiso);
         }
         DPRINT1("EG_isoCline -> status=%d\n", status);
+        if (status != EGADS_SUCCESS) goto cleanup;
 
-        /* make a fit of r vs. x*/
-        xr0 = (double*) malloc(3*npnt*sizeof(double));
-        if (xr0 == NULL) {
-            status = EGADS_MALLOC;
-            goto cleanup;
-        }
-    
-        status = EG_getRange(ecurve, trange, &periodic);
-        DPRINT3("EG_getRange -> status=%d, trange=%f, %f\n", status, trange[0], trange[1]);
+        status = EG_getRange(eiso, trange, &periodic);
+        if (status != EGADS_SUCCESS) goto cleanup;
 
-        for (ipnt = 0; ipnt < npnt; ipnt++) {
-            tt = trange[0] + (double)(ipnt) / (double)(npnt-1) * (trange[1] - trange[0]);
-
-            status = EG_evaluate(ecurve, &tt, data2);
-
-            xr0[3*ipnt  ] = data2[0];
-            xr0[3*ipnt+1] = sqrt(data2[1]*data2[1] + data2[2]*data2[2]);
-            xr0[3*ipnt+2] = 0;
+        /* preferred cap surface: revolve T-Blade3's hub/casing streamline (the
+           flow-path surface).  It does not depend on the blade design variables,
+           so the caps have zero normal velocity.  Fall back to a fit of the end
+           section itself if the section is not on it (e.g. inflated hub/tip) */
+        esurface = NULL;
+        status = tbStreamlineCap(context, (isec == 1) ? "hub" : "casing", casename,
+                                 eiso, npnt, &esurface);
+        if (status != EGADS_SUCCESS) {
+            esurface = NULL;
         }
 
-        /* order the points based upon x (using SLOW bubble sort) */
-        for (ipnt = 0; ipnt < npnt-1; ipnt++) {
-            for (jpnt = ipnt+1; jpnt < npnt; jpnt++) {
-                if (xr0[3*ipnt] > xr0[3*jpnt]) {
-                    swap = xr0[3*ipnt  ]; xr0[3*ipnt  ] = xr0[3*jpnt  ]; xr0[3*jpnt  ] = swap;
-                    swap = xr0[3*ipnt+1]; xr0[3*ipnt+1] = xr0[3*jpnt+1]; xr0[3*jpnt+1] = swap;
-                    swap = xr0[3*ipnt+2]; xr0[3*ipnt+2] = xr0[3*jpnt+2]; xr0[3*jpnt+2] = swap;
+        if (esurface == NULL) {
+            /* make a fit of r vs. x*/
+            xr0 = (double*) malloc(3*npnt*sizeof(double));
+            if (xr0 == NULL) {
+                status = EGADS_MALLOC;
+                goto cleanup;
+            }
+
+            status = EG_getRange(eiso, trange, &periodic);
+            DPRINT3("EG_getRange -> status=%d, trange=%f, %f\n", status, trange[0], trange[1]);
+            if (status != EGADS_SUCCESS) goto cleanup;
+
+            for (ipnt = 0; ipnt < npnt; ipnt++) {
+                tt = trange[0] + (double)(ipnt) / (double)(npnt-1) * (trange[1] - trange[0]);
+
+                status = EG_evaluate(eiso, &tt, data2);
+                if (status != EGADS_SUCCESS) goto cleanup;
+
+                xr0[3*ipnt  ] = data2[0];
+                xr0[3*ipnt+1] = sqrt(data2[1]*data2[1] + data2[2]*data2[2]);
+                xr0[3*ipnt+2] = 0;
+            }
+
+            /* order the points based upon x (using SLOW bubble sort) */
+            for (ipnt = 0; ipnt < npnt-1; ipnt++) {
+                for (jpnt = ipnt+1; jpnt < npnt; jpnt++) {
+                    if (xr0[3*ipnt] > xr0[3*jpnt]) {
+                        swap = xr0[3*ipnt  ]; xr0[3*ipnt  ] = xr0[3*jpnt  ]; xr0[3*jpnt  ] = swap;
+                        swap = xr0[3*ipnt+1]; xr0[3*ipnt+1] = xr0[3*jpnt+1]; xr0[3*jpnt+1] = swap;
+                        swap = xr0[3*ipnt+2]; xr0[3*ipnt+2] = xr0[3*jpnt+2]; xr0[3*jpnt+2] = swap;
+                    }
                 }
             }
-        }
-        
-        /* arbitrarily extend surface beyond xmin and xmax */
-        xr0[3] =     xr0[0];
-        xr0[4] =     xr0[1];
-        xr0[5] =     xr0[2];
-        xr0[0] = 2 * xr0[3] - xr0[30];
-        xr0[1] = 2 * xr0[4] - xr0[31];
-        xr0[2] = 2 * xr0[5] - xr0[32];
 
-        xr0[3*npnt-6] =     xr0[3*npnt-3];
-        xr0[3*npnt-5] =     xr0[3*npnt-2];
-        xr0[3*npnt-4] =     xr0[3*npnt-1];
-        xr0[3*npnt-3] = 2 * xr0[3*npnt-6] - xr0[3*npnt-30];
-        xr0[3*npnt-2] = 2 * xr0[3*npnt-5] - xr0[3*npnt-29];
-        xr0[3*npnt-1] = 2 * xr0[3*npnt-4] - xr0[3*npnt-28];
+            /* arbitrarily extend surface beyond xmin and xmax */
+            xr0[3] =     xr0[0];
+            xr0[4] =     xr0[1];
+            xr0[5] =     xr0[2];
+            xr0[0] = 2 * xr0[3] - xr0[30];
+            xr0[1] = 2 * xr0[4] - xr0[31];
+            xr0[2] = 2 * xr0[5] - xr0[32];
 
-        status = EG_fitBspline(context, npnt, 1, xr0, 6, &ecurve, &rms);
-        DPRINT2("EG_fitBspline -> status=%d, rms=%f\n", status, rms);
-        if (status != EGADS_SUCCESS) goto cleanup;
+            xr0[3*npnt-6] =     xr0[3*npnt-3];
+            xr0[3*npnt-5] =     xr0[3*npnt-2];
+            xr0[3*npnt-4] =     xr0[3*npnt-1];
+            xr0[3*npnt-3] = 2 * xr0[3*npnt-6] - xr0[3*npnt-30];
+            xr0[3*npnt-2] = 2 * xr0[3*npnt-5] - xr0[3*npnt-29];
+            xr0[3*npnt-1] = 2 * xr0[3*npnt-4] - xr0[3*npnt-28];
+
+            status = EG_fitBspline(context, npnt, 1, xr0, TB_NCPREV, &ecurve, &rms);
+            DPRINT2("EG_fitBspline -> status=%d, rms=%f\n", status, rms);
+            if (status != EGADS_SUCCESS) goto cleanup;
+
+            free(xr0);
+            xr0 = NULL;
 
 #ifdef GRAFIC
-        /* plot the fit */
-        status = plotCurve(npnt, xr0, ecurve);
-        if (status != EGADS_SUCCESS) goto cleanup;
+            /* plot the fit */
+            status = plotCurve(npnt, xr0, ecurve);
+            if (status != EGADS_SUCCESS) goto cleanup;
 #endif
-    
-        /* make a surface of revolution */
-        data[0] = data[1] = data[2] = 0;
-        data[3] = 1;
-        data[4] = data[5] = 0;
-        status = EG_makeGeometry(context, SURFACE, REVOLUTION, ecurve,
-                                 NULL, data, &esurface);
-        DPRINT1("EG_makeGeometry -> status=%d\n", status);
-        if (status != EGADS_SUCCESS) goto cleanup;
 
-        /* create the Face */
-        status = EG_getRange(ecurves[isec-1], trange, &periodic);
+            /* make a surface of revolution */
+            data[0] = data[1] = data[2] = 0;
+            data[3] = 1;
+            data[4] = data[5] = 0;
+            status = EG_makeGeometry(context, SURFACE, REVOLUTION, ecurve,
+                                     NULL, data, &esurface);
+            DPRINT1("EG_makeGeometry -> status=%d\n", status);
+            if (status != EGADS_SUCCESS) goto cleanup;
+
+        }
+
+        /* create the Face, split at the same u as the blade Faces */
         trange[2] =  trange[1];
-        trange[1] = (trange[0] + trange[2]) / 2;
+        trange[1] =  umid;
 
-        DPRINT1("EG_getRange -> status=%d\n", status);
-        DPRINT3("trange =%f %f %f\n", trange[0], trange[1], trange[2]);
-        if (status != EGADS_SUCCESS) goto cleanup;
-
-        status = EG_evaluate(ecurves[isec-1], &(trange[0]), xyzNode);
+        status = EG_evaluate(eiso, &(trange[0]), xyzNode);
         DPRINT4("EG_evaluate -> status=%d, xyzNode=%f %f %f\n",
                status, xyzNode[0], xyzNode[1], xyzNode[2]);
         if (status != EGADS_SUCCESS) goto cleanup;
@@ -847,7 +743,7 @@ udpExecute(ego  context,                /* (in)  EGADS context */
         DPRINT1("EG_makeTopology(node0) -> status=%d\n", status);
         if (status != EGADS_SUCCESS) goto cleanup;
 
-        status = EG_evaluate(ecurves[isec-1], &(trange[1]), xyzNode);
+        status = EG_evaluate(eiso, &(trange[1]), xyzNode);
         DPRINT4("EG_evaluate -> status=%d, xyzNode=%f %f %f\n",
                 status, xyzNode[0], xyzNode[1], xyzNode[2]);
         if (status != EGADS_SUCCESS) goto cleanup;
@@ -859,24 +755,33 @@ udpExecute(ego  context,                /* (in)  EGADS context */
 
         enodes[2] = enodes[0];
 
-    /* create the two Edges for this section */
-        status = EG_makeTopology(context, ecurves[isec-1], EDGE, TWONODE,
+        /* create the two Edges for this section */
+        status = EG_makeTopology(context, eiso, EDGE, TWONODE,
                                  trange, 2, &(enodes[0]), NULL, &(eedges[0]));
         DPRINT1("EG_makeTopology(edge0) -> status=%d\n", status);
         if (status != EGADS_SUCCESS) goto cleanup;
 
-        status = EG_makeTopology(context, ecurves[isec-1], EDGE, TWONODE,
+        status = EG_makeTopology(context, eiso, EDGE, TWONODE,
                                  &(trange[1]), 2, &(enodes[1]), NULL, &(eedges[1]));
         DPRINT1("EG_makeTopology(edge1) -> status=%d\n", status);
         if (status != EGADS_SUCCESS) goto cleanup;
 
-        /* create the Loop for this section */
-        status = EG_otherCurve(esurface, ecurves[isec-1], 10*toler, &epcurve);
-        DPRINT1("EG_otherCurve -> status=%d\n", status);
-        if (status != EGADS_SUCCESS) goto cleanup;
+        /* create the Loop for this section, with one P-curve per Edge (a single
+           P-curve for the whole closed section fits poorly near the LE) */
+        for (ipnt = 0; ipnt < 2; ipnt++) {
+            ego etrim;
 
-        eedges[2] = epcurve;
-        eedges[3] = epcurve;
+            status = EG_makeGeometry(context, CURVE, TRIMMED, eiso, NULL,
+                                     &(trange[ipnt]), &etrim);
+            DPRINT1("EG_makeGeometry(trimmed) -> status=%d\n", status);
+            if (status != EGADS_SUCCESS) goto cleanup;
+
+            status = EG_otherCurve(esurface, etrim, TB_PCTOL, &epcurve);
+            DPRINT1("EG_otherCurve -> status=%d\n", status);
+            if (status != EGADS_SUCCESS) goto cleanup;
+
+            eedges[2+ipnt] = epcurve;
+        }
 
         senses[0] = SFORWARD;
         senses[1] = SFORWARD;
@@ -914,6 +819,29 @@ udpExecute(ego  context,                /* (in)  EGADS context */
     /* remember this model (body) */
     udps[numUdp].ebody = *ebody;
 
+    /* private data for udpSensitivity */
+    tb = (tbData_T*) calloc(1, sizeof(tbData_T));
+    if (tb == NULL) {
+        status = EGADS_MALLOC;
+        goto cleanup;
+    }
+    tb->nsec = nsec;
+    tb->npnt = npnt0;
+    tb->xyz  = xyzAll;
+    xyzAll   = NULL;
+
+    /* the derivatives exist only if T-Blade3 actually ran */
+    if (SWITCH(numUdp) != 1) {
+        status = tbFetchDerivatives(tb, &(udps[numUdp]));
+        if (status != EGADS_SUCCESS) goto cleanup;
+    }
+
+    if (udps[numUdp].data != NULL) {
+        (void) freePrivateData(udps[numUdp].data);
+    }
+    udps[numUdp].data = tb;
+    tb = NULL;
+
     DPRINT1("udpExecute -> *ebody=%llx\n", (long long)(*ebody));
 
 cleanup:
@@ -921,7 +849,8 @@ cleanup:
     /* change working directory back */
     chdir("./..");
 
-    if (ecurves != NULL) free(ecurves);
+    if (xyzAll  != NULL) free(xyzAll);
+    if (tb      != NULL) (void) freePrivateData(tb);
 
     if (xr0 != NULL) free(xr0);
 
@@ -943,17 +872,23 @@ cleanup:
 
 int
 udpSensitivity(ego    ebody,            /* (in)  Body pointer */
-   /*@unused@*/int    npnt,             /* (in)  number of points */
-   /*@unused@*/int    entType,          /* (in)  OCSM entity type */
-   /*@unused@*/int    entIndex,         /* (in)  OCSM entity index (bias-1) */
-   /*@unused@*/double uvs[],            /* (in)  parametric coordinates for evaluation */
-   /*@unused@*/double vels[])           /* (out) velocities */
+               int    npnt,             /* (in)  number of points */
+               int    entType,          /* (in)  OCSM entity type */
+               int    entIndex,         /* (in)  OCSM entity index (bias-1) */
+               double uvs[],            /* (in)  parametric coordinates for evaluation */
+               double vels[])           /* (out) velocities */
 {
-    int    iudp, judp;
+    int      status = EGADS_SUCCESS;
+    int      iudp, judp, isen, iarg, i, j, n, ndot, changed, ipnt, sizes[2];
+    int      oclass, mtype, nchild, *senses, *ivec=NULL, nent;
+    double   *dgrid=NULL, *dots=NULL, data[18], data_dot[18], *rvec=NULL;
+    int      nface, iface, nbsurf, k;
+    ego      eref, *echilds, *eents=NULL, *efaces=NULL, esurf, bsurf[4];
+    tbData_T *tb;
 
 #ifdef DEBUG
-    printf("udpSensitivity(ebody=%llx, npnt=%d, entType=%d, entIndex=%d, uvs=%f %f)\n",
-           (long long)ebody, npnt, entType, entIndex, uvs[0], uvs[1]);
+    printf("udpSensitivity(ebody=%llx, npnt=%d, entType=%d, entIndex=%d)\n",
+           (long long)ebody, npnt, entType, entIndex);
 #endif
 
     /* check that ebody matches one of the ebodys */
@@ -968,8 +903,498 @@ udpSensitivity(ego    ebody,            /* (in)  Body pointer */
         return EGADS_NOTMODEL;
     }
 
-    /* this routine is not written yet */
-    return EGADS_NOLOAD;
+    tb = (tbData_T *) udps[iudp].data;
+    if (tb == NULL || tb->xyz == NULL) {
+        return EGADS_NOLOAD;            /* OpenCSM falls back to finite differences */
+    }
+
+    /* the distinct BSPLINE surfaces under the blade Faces */
+    status = EG_getBodyTopos(ebody, NULL, FACE, &nface, &efaces);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    nbsurf = 0;
+    for (iface = 0; iface < nface; iface++) {
+        status = EG_getTopology(efaces[iface], &esurf, &oclass, &mtype,
+                                data, &nchild, &echilds, &senses);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        if (esurf->mtype != BSPLINE) continue;
+        for (k = 0; k < nbsurf; k++) {
+            if (bsurf[k] == esurf) break;
+        }
+        if (k == nbsurf && nbsurf < 4) bsurf[nbsurf++] = esurf;
+    }
+    if (nbsurf == 0) {
+        status = EGADS_NOLOAD;
+        goto cleanup;
+    }
+
+    /* gather the current argument dots (only the ATTRREALSEN arguments have them) */
+    ndot = 0;
+    for (isen = 0; isen < TB_NSENS; isen++) {
+        ndot += udps[iudp].arg[tbSensArg[isen]].size;
+    }
+    dots = (double *) malloc(ndot*sizeof(double));
+    if (dots == NULL) {
+        status = EGADS_MALLOC;
+        goto cleanup;
+    }
+    n = 0;
+    for (isen = 0; isen < TB_NSENS; isen++) {
+        iarg = tbSensArg[isen];
+        for (i = 0; i < udps[iudp].arg[iarg].size; i++) {
+            dots[n++] = (udps[iudp].arg[iarg].dot != NULL) ? udps[iudp].arg[iarg].dot[i] : 0;
+        }
+    }
+
+    /* (re)compute the dots on the private surface if the argument dots changed */
+    changed = (udps[iudp].ndotchg != 0 || tb->lastdot == NULL || tb->nlastdot != ndot);
+    for (k = 0; k < nbsurf; k++) {
+        if (EG_hasGeometry_dot(bsurf[k]) != EGADS_SUCCESS) changed = 1;
+    }
+    for (i = 0; changed == 0 && i < ndot; i++) {
+        if (dots[i] != tb->lastdot[i]) changed = 1;
+    }
+
+    if (changed) {
+        n = 3 * tb->npnt * tb->nsec;
+        dgrid = (double *) calloc(n, sizeof(double));
+        if (dgrid == NULL) {
+            status = EGADS_MALLOC;
+            goto cleanup;
+        }
+
+        /* d(xyz) = sum over arguments and control points of dot * d(xyz)/d(arg) */
+        for (isen = 0; isen < TB_NSENS; isen++) {
+            iarg = tbSensArg[isen];
+            if (udps[iudp].arg[iarg].dot == NULL || tb->der[isen] == NULL) continue;
+            for (i = 0; i < tb->nder[isen] && i < udps[iudp].arg[iarg].size; i++) {
+                double d = udps[iudp].arg[iarg].dot[i];
+                if (d == 0) continue;
+                for (j = 0; j < n; j++) {
+                    dgrid[j] += d * tb->der[isen][(long)i*n+j];
+                }
+            }
+        }
+
+        sizes[0] = tb->npnt;
+        sizes[1] = tb->nsec;
+        for (k = 0; k < nbsurf; k++) {
+            status = EG_approximate_dot(bsurf[k], 0, TB_FITTOL, sizes, tb->xyz, dgrid);
+            if (status != EGADS_SUCCESS) {
+                printf(" udpSensitivity: EG_approximate_dot -> status=%d\n", status);
+                goto cleanup;
+            }
+        }
+
+        free(tb->lastdot);
+        tb->lastdot  = dots;
+        tb->nlastdot = ndot;
+        dots         = NULL;
+    }
+
+    /* OpenCSM calls with npnt=0 right after udpExecute */
+    if (npnt <= 0) goto cleanup;
+
+    if (entType == OCSM_FACE) {
+        status = EG_getBodyTopos(ebody, NULL, FACE, &nent, &eents);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        if (entIndex < 1 || entIndex > nent) {
+            status = EGADS_INDEXERR;
+            goto cleanup;
+        }
+
+        /* the blade Faces lie on a BSPLINE; the hub/tip caps are surfaces of
+           revolution of the (fixed) flow-path contour, so their normal velocity
+           is zero */
+        status = EG_getTopology(eents[entIndex-1], &esurf, &oclass, &mtype,
+                                data, &nchild, &echilds, &senses);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        status = EG_getGeometry(esurf, &oclass, &mtype, &eref, &ivec, &rvec);
+        if (status != EGADS_SUCCESS) goto cleanup;
+
+        for (ipnt = 0; ipnt < npnt; ipnt++) {
+            if (mtype != BSPLINE) {
+                vels[3*ipnt  ] = 0;
+                vels[3*ipnt+1] = 0;
+                vels[3*ipnt+2] = 0;
+                continue;
+            }
+            status = EG_evaluate_dot(esurf, &(uvs[2*ipnt]), NULL, data, data_dot);
+            if (status != EGADS_SUCCESS) goto cleanup;
+            vels[3*ipnt  ] = data_dot[0];
+            vels[3*ipnt+1] = data_dot[1];
+            vels[3*ipnt+2] = data_dot[2];
+        }
+
+    } else if (entType == OCSM_EDGE) {
+        status = EG_getBodyTopos(ebody, NULL, EDGE, &nent, &eents);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        if (entIndex < 1 || entIndex > nent) {
+            status = EGADS_INDEXERR;
+            goto cleanup;
+        }
+
+        /* every Edge bounds a blade Face: use its (u,v) on that Face */
+        for (ipnt = 0; ipnt < npnt; ipnt++) {
+            status = tbEdgeVel(ebody, eents[entIndex-1], uvs[ipnt], &(vels[3*ipnt]));
+            if (status != EGADS_SUCCESS) goto cleanup;
+        }
+
+    } else if (entType == OCSM_NODE) {
+        status = EG_getBodyTopos(ebody, NULL, NODE, &nent, &eents);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        if (entIndex < 1 || entIndex > nent) {
+            status = EGADS_INDEXERR;
+            goto cleanup;
+        }
+
+        status = tbNodeVel(ebody, eents[entIndex-1], &(vels[0]));
+        if (status != EGADS_SUCCESS) goto cleanup;
+        for (ipnt = 1; ipnt < npnt; ipnt++) {
+            vels[3*ipnt  ] = vels[0];
+            vels[3*ipnt+1] = vels[1];
+            vels[3*ipnt+2] = vels[2];
+        }
+
+    } else {
+        printf(" udpSensitivity: bad entType=%d\n", entType);
+        status = EGADS_ATTRERR;
+        goto cleanup;
+    }
+
+cleanup:
+    if (eents  != NULL) EG_free(eents);
+    if (efaces != NULL) EG_free(efaces);
+    if (ivec   != NULL) EG_free(ivec);
+    if (rvec  != NULL) EG_free(rvec);
+    if (dgrid != NULL) free(dgrid);
+    if (dots  != NULL) free(dots);
+
+    return status;
+}
+
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   tbEdgeVel - velocity of a point on an Edge of the blade Body       *
+ *                                                                      *
+ ************************************************************************
+ */
+
+static int
+tbEdgeVel(ego    ebody,                 /* (in)  Body */
+          ego    eedge,                 /* (in)  Edge */
+          double t,                     /* (in)  Edge parameter */
+          double vel[])                 /* (out) d(xyz)/d(design) */
+{
+    int    status = EGADS_NOTFOUND;
+    int    nface, iface, oclass, mtype, nchild, *senses, stat2;
+    double uv[2], data[18], data_dot[18];
+    ego    *efaces=NULL, esurf, *echilds;
+
+    stat2 = EG_getBodyTopos(ebody, eedge, FACE, &nface, &efaces);
+    if (stat2 != EGADS_SUCCESS) {
+        status = stat2;
+        goto cleanup;
+    }
+
+    /* use the first adjacent blade (BSPLINE) Face */
+    for (iface = 0; iface < nface; iface++) {
+        stat2 = EG_getTopology(efaces[iface], &esurf, &oclass, &mtype,
+                               data, &nchild, &echilds, &senses);
+        if (stat2 != EGADS_SUCCESS || esurf->mtype != BSPLINE) continue;
+
+        stat2 = EG_getEdgeUV(efaces[iface], eedge, 0, t, uv);
+        if (stat2 != EGADS_SUCCESS) continue;
+
+        status = EG_evaluate_dot(esurf, uv, NULL, data, data_dot);
+        if (status != EGADS_SUCCESS) goto cleanup;
+
+        vel[0] = data_dot[0];
+        vel[1] = data_dot[1];
+        vel[2] = data_dot[2];
+        break;
+    }
+
+cleanup:
+    if (efaces != NULL) EG_free(efaces);
+    return status;
+}
+
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   tbNodeVel - velocity of a Node of the blade Body                   *
+ *                                                                      *
+ ************************************************************************
+ */
+
+static int
+tbNodeVel(ego    ebody,                 /* (in)  Body */
+          ego    enode,                 /* (in)  Node */
+          double vel[])                 /* (out) d(xyz)/d(design) */
+{
+    int    status = EGADS_NOTFOUND;
+    int    nedge, iedge, oclass, mtype, nnode, *senses;
+    double trange[4], t;
+    ego    *eedges=NULL, eref, *enodes;
+
+    status = EG_getBodyTopos(ebody, enode, EDGE, &nedge, &eedges);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    status = EGADS_NOTFOUND;
+    for (iedge = 0; iedge < nedge; iedge++) {
+        if (EG_getTopology(eedges[iedge], &eref, &oclass, &mtype, trange,
+                           &nnode, &enodes, &senses) != EGADS_SUCCESS) continue;
+        if (mtype == DEGENERATE) continue;
+        if (enodes[0] == enode) {
+            t = trange[0];
+        } else if (nnode > 1 && enodes[1] == enode) {
+            t = trange[1];
+        } else {
+            continue;
+        }
+        status = tbEdgeVel(ebody, eedges[iedge], t, vel);
+        if (status == EGADS_SUCCESS) break;
+    }
+
+cleanup:
+    if (eedges != NULL) EG_free(eedges);
+    return status;
+}
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   tbFetchDerivatives - copy T-Blade3's section derivatives           *
+ *                                                                      *
+ ************************************************************************
+ */
+
+static int
+tbFetchDerivatives(tbData_T *tb,        /* (both) private data */
+                   udp_T    *udp)       /* (in)   this UDP instance */
+{
+    int    isen, iarg, l, dims[4], n;
+
+    n = 3 * tb->npnt * tb->nsec;
+
+    for (isen = 0; isen < TB_NSENS; isen++) {
+        tb->nder[isen] = 0;
+        tb->der[ isen] = NULL;
+
+        iarg = tbSensArg[isen];
+        if (tb_get_xyz_ders_size(tbSensGroup[isen], dims) != 0) continue;
+
+        if (dims[0] != tb->nsec || dims[1] != tb->npnt || tbSensK[isen] > dims[2]) {
+            printf(" udpTblade: derivative group %d is %dx%dx%d, expected %dx%dx>=%d (no sensitivities for %s)\n",
+                   tbSensGroup[isen], dims[0], dims[1], dims[2], tb->nsec, tb->npnt, tbSensK[isen], argNames[iarg]);
+            continue;
+        }
+
+        /* T-Blade3 only uses the argument (override_*) when its size matches
+           the number of control points; otherwise the argument has no effect
+           and its sensitivity is zero */
+        if (udp->arg[iarg].size != dims[3]) continue;
+
+        tb->der[isen] = (double *) malloc((long)dims[3]*n*sizeof(double));
+        if (tb->der[isen] == NULL) return EGADS_MALLOC;
+
+        for (l = 0; l < dims[3]; l++) {
+            if (tb_get_xyz_ders(tbSensGroup[isen], tbSensK[isen], l+1, &(tb->der[isen][(long)l*n])) != 0) {
+                free(tb->der[isen]);
+                tb->der[isen] = NULL;
+                break;
+            }
+        }
+        if (tb->der[isen] != NULL) tb->nder[isen] = dims[3];
+    }
+
+    return EGADS_SUCCESS;
+}
+
+
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   tbStreamlineCap - surface of revolution of the hub/casing          *
+ *                     streamline written by T-Blade3                   *
+ *                                                                      *
+ ************************************************************************
+ */
+
+#define TB_CAPTOL   1.0e-3      /* max distance (relative to radius) of the end section from the cap */
+
+static int
+tbStreamlineCap(ego        context,     /* (in)  EGADS context */
+                const char *which,      /* (in)  "hub" or "casing" */
+                const char *casename,   /* (in)  T-Blade3 case name */
+                ego        eiso,        /* (in)  end section of the blade surface */
+                int        npnt,        /* (in)  number of points to check */
+                ego        *esurface)   /* (out) REVOLUTION surface (NULL if not usable) */
+{
+    int    status = EGADS_SUCCESS;
+    int    n, nalloc, sizes[2], ipnt, periodic;
+    double *xr=NULL, x, y, z, data[18], uv[2], xyz[3], res[3], trange[2], tt, dist, dmax, rmax;
+    char   fname[300];
+    FILE   *fp=NULL;
+    ego    ecurve=NULL, esurf=NULL;
+
+    *esurface = NULL;
+
+    snprintf(fname, 299, "%s.%s.sldcrv", which, casename);
+    fp = fopen(fname, "r");
+    if (fp == NULL) {
+        status = EGADS_NOTFOUND;
+        goto cleanup;
+    }
+
+    /* file has x, 0, r (already scaled) */
+    n      = 0;
+    nalloc = 0;
+    while (fscanf(fp, "%lf %lf %lf", &x, &y, &z) == 3) {
+        if (n >= nalloc) {
+            double *tmp;
+            nalloc += 100;
+            tmp = (double *) realloc(xr, 3*nalloc*sizeof(double));
+            if (tmp == NULL) {
+                status = EGADS_MALLOC;
+                goto cleanup;
+            }
+            xr = tmp;
+        }
+        xr[3*n  ] = x;
+        xr[3*n+1] = sqrt(y*y + z*z);
+        xr[3*n+2] = 0;
+        n++;
+    }
+    if (n < 4) {
+        status = EGADS_NODATA;
+        goto cleanup;
+    }
+
+    /* cubic curve through the streamline points, revolved about the x axis */
+    sizes[0] = n;
+    sizes[1] = 0;
+    status = EG_approximate(context, 0, TB_FITTOL, sizes, xr, &ecurve);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    data[0] = data[1] = data[2] = 0;
+    data[3] = 1;
+    data[4] = data[5] = 0;
+    status = EG_makeGeometry(context, SURFACE, REVOLUTION, ecurve, NULL, data, &esurf);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    /* the end section must lie on it */
+    status = EG_getRange(eiso, trange, &periodic);
+    if (status != EGADS_SUCCESS) goto cleanup;
+
+    dmax = 0;
+    rmax = 0;
+    for (ipnt = 0; ipnt < npnt; ipnt++) {
+        tt = trange[0] + (double)(ipnt) / (double)(npnt-1) * (trange[1] - trange[0]);
+        status = EG_evaluate(eiso, &tt, data);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        xyz[0] = data[0];
+        xyz[1] = data[1];
+        xyz[2] = data[2];
+        status = EG_invEvaluate(esurf, xyz, uv, res);
+        if (status != EGADS_SUCCESS) goto cleanup;
+        dist = sqrt(SQR(res[0]-xyz[0]) + SQR(res[1]-xyz[1]) + SQR(res[2]-xyz[2]));
+        dmax = MAX(dmax, dist);
+        rmax = MAX(rmax, sqrt(SQR(xyz[1]) + SQR(xyz[2])));
+    }
+
+    if (dmax > TB_CAPTOL * rmax) {
+        printf(" udpTblade: %s section is %g from the %s streamline surface; fitting the section instead\n",
+               which, dmax, which);
+        status = EGADS_RANGERR;
+        goto cleanup;
+    }
+    DPRINT2("udpTblade: %s cap from streamline, max distance %g\n", which, dmax);
+
+    *esurface = esurf;
+    esurf     = NULL;
+
+cleanup:
+    if (fp    != NULL) fclose(fp);
+    if (xr    != NULL) free(xr);
+    if (esurf != NULL) EG_deleteObject(esurf);
+
+    return status;
+}
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   freePrivateData - free the private data of one UDP instance        *
+ *                                                                      *
+ ************************************************************************
+ */
+
+static int
+freePrivateData(void *data)
+{
+    int      isen;
+    tbData_T *tb = (tbData_T *) data;
+
+    if (tb == NULL) return EGADS_SUCCESS;
+
+    free(tb->xyz);
+    for (isen = 0; isen < TB_NSENS; isen++) free(tb->der[isen]);
+    free(tb->lastdot);
+    free(tb);
+
+    return EGADS_SUCCESS;
+}
+
+
+/*
+ ************************************************************************
+ *                                                                      *
+ *   copyPrivateData - deep copy of the private data                    *
+ *                                                                      *
+ ************************************************************************
+ */
+
+static int
+copyPrivateData(/*@null@*/void *src,
+                          void **tgt)
+{
+    int      isen, n;
+    tbData_T *from = (tbData_T *) src, *to;
+
+    *tgt = NULL;
+    if (from == NULL) return EGADS_SUCCESS;
+
+    to = (tbData_T *) calloc(1, sizeof(tbData_T));
+    if (to == NULL) return EGADS_MALLOC;
+
+    n = 3 * from->npnt * from->nsec;
+    to->nsec = from->nsec;
+    to->npnt = from->npnt;
+
+    to->xyz = (double *) malloc(n*sizeof(double));
+    if (to->xyz == NULL) goto oom;
+    memcpy(to->xyz, from->xyz, n*sizeof(double));
+
+    for (isen = 0; isen < TB_NSENS; isen++) {
+        if (from->der[isen] == NULL) continue;
+        to->der[isen] = (double *) malloc((long)from->nder[isen]*n*sizeof(double));
+        if (to->der[isen] == NULL) goto oom;
+        memcpy(to->der[isen], from->der[isen], (long)from->nder[isen]*n*sizeof(double));
+        to->nder[isen] = from->nder[isen];
+    }
+
+    *tgt = to;
+    return EGADS_SUCCESS;
+
+oom:
+    (void) freePrivateData(to);
+    return EGADS_MALLOC;
 }
 
 
