@@ -134,6 +134,14 @@ static double argDdefs[NUMUDPARGS] = {33.,      0.,         0.,         0.,
 /* get utility routines: udpErrorStr, udpInitialize, udpReset, udpSet,
                          udpGet, udpVel, udpClean, udpMesh */
 #include "udpUtilities.c"
+
+/* ESP >= 1.24 passes the UDP storage (NumUdp, udps) into udpExecute instead of
+   keeping it in globals.  The override_*_ callbacks are called from Fortran with
+   fixed signatures, so udpExecute stashes the storage here before calling
+   T-Blade3.  NOT thread-safe: do not use with multi-threaded ocsmAdjoint. */
+static int   *tb_NumUdp = NULL;
+static udp_T *tb_udps   = NULL;
+#define TB_UDP_LOCALS  int *NumUdp = tb_NumUdp; udp_T *udps = tb_udps;
 #include <sys/stat.h>
 #include <stdio.h>
 #include <assert.h>
@@ -167,7 +175,7 @@ static double argDdefs[NUMUDPARGS] = {33.,      0.,         0.,         0.,
 
 #ifdef WIN32
    extern void   BGB3D_SUB (char fname[], char sname[], char arg2[], char arg3[], char arg4[],
-                            int len_fname, int len_sname, int len_arg2, int len_arg3, int len_arg4);
+                            size_t len_fname, size_t len_sname, size_t len_arg2, size_t len_arg3, size_t len_arg4);
 
    void   OVERRIDE_CUR1 (               int *nspn, double cur1[                 ]);
    void   OVERRIDE_CUR2 (               int *nspn, double cur2[                 ]);
@@ -205,7 +213,7 @@ static double argDdefs[NUMUDPARGS] = {33.,      0.,         0.,         0.,
    void   OVERRIDE_NACA_T_TE (          int *nspn, double naca_t_te[            ]);
 #else
    extern void   bgb3d_sub_(char fname[], char sname[], char arg2[], char arg3[],   char arg4[],
-                            int len_fname, int len_sname, int len_arg2, int len_arg3, int len_arg4);
+                            size_t len_fname, size_t len_sname, size_t len_arg2, size_t len_arg3, size_t len_arg4);
 
    void   override_cur1_(               int *nspn, double cur1[                 ]);
    void   override_cur2_(               int *nspn, double cur2[                 ]);
@@ -288,6 +296,7 @@ udpExecute(ego  context,                /* (in)  EGADS context */
            int  *nMesh,                 /* (out) number of associated meshes */
            char *string[])              /* (out) error message */
 {
+    udp_T   *udps = *Udps;      /* per-model UDP storage (ESP >= 1.24) */
     int     status = EGADS_SUCCESS;
 
 #define NPNT 1000
@@ -417,6 +426,8 @@ udpExecute(ego  context,                /* (in)  EGADS context */
 
     /* cache copy of arguments for future use */
     status = cacheUdp(NULL);
+    tb_NumUdp = NumUdp;
+    tb_udps   = udps;
     if (status < 0) {
         printf(" udpExecute: problem caching arguments\n");
         goto cleanup;
@@ -892,7 +903,11 @@ udpExecute(ego  context,                /* (in)  EGADS context */
     DPRINT2("EG_getTopology(model) -> status=%d, nbody=%d\n", status, nbody);
     if (status != EGADS_SUCCESS) goto cleanup;
 
-    *ebody = ebodys[0];
+    /* copy the Body out of the sewn Model so the Model can be freed */
+    status = EG_copyObject(ebodys[0], NULL, ebody);
+    DPRINT1("EG_copyObject -> status=%d\n", status);
+    EG_deleteObject(emodel);
+    if (status != EGADS_SUCCESS) goto cleanup;
 
     /* set the output value(s) */
 
@@ -972,6 +987,7 @@ void OVERRIDE_CUR1 (int *nspn, double cur1[])
 void override_cur1_(int *nspn, double cur1[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=6;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1001,6 +1017,7 @@ void OVERRIDE_CUR2 (int *nspn, double cur2[])
 void override_cur2_(int *nspn, double cur2[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=7;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1030,6 +1047,7 @@ void OVERRIDE_CUR3 (int *nspn, double cur3[])
 void override_cur3_(int *nspn, double cur3[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=8;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1059,6 +1077,7 @@ void OVERRIDE_CUR4 (int *nspn, double cur4[])
 void override_cur4_(int *nspn, double cur4[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=9;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1088,6 +1107,7 @@ void OVERRIDE_CUR5 (int *nspn, double cur5[])
 void override_cur5_(int *nspn, double cur5[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=10;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1117,6 +1137,7 @@ void OVERRIDE_CUR6 (int *nspn, double cur6[])
 void override_cur6_(int *nspn, double cur6[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=11;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1146,6 +1167,7 @@ void OVERRIDE_CUR7 (int *nspn, double cur7[])
 void override_cur7_(int *nspn, double cur7[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=12;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1175,6 +1197,7 @@ void OVERRIDE_U2 (int *nspn, double u2[])
 void override_u2_(int *nspn, double u2[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=13;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1204,6 +1227,7 @@ void OVERRIDE_U3 (int *nspn, double u3[])
 void override_u3_(int *nspn, double u3[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=14;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1233,6 +1257,7 @@ void OVERRIDE_U4 (int *nspn, double u4[])
 void override_u4_(int *nspn, double u4[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=15;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1262,6 +1287,7 @@ void OVERRIDE_U5 (int *nspn, double u5[])
 void override_u5_(int *nspn, double u5[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=16;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1291,6 +1317,7 @@ void OVERRIDE_U6 (int *nspn, double u6[])
 void override_u6_(int *nspn, double u6[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=17;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1321,6 +1348,7 @@ void OVERRIDE_SPAN_DEL_M_CTRL (int *nspn, double span_del_m_ctrl[])
 void override_span_del_m_ctrl_(int *nspn, double span_del_m_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=18;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1351,6 +1379,7 @@ void OVERRIDE_SPAN_DEL_THETA_CTRL (int *nspn, double span_del_theta_ctrl[])
 void override_span_del_theta_ctrl_(int *nspn, double span_del_theta_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=19;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1381,6 +1410,7 @@ void OVERRIDE_SPAN_IN_BETA_CTRL (int *nspn, double span_in_beta_ctrl[])
 void override_span_in_beta_ctrl_(int *nspn, double span_in_beta_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=20;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1411,6 +1441,7 @@ void OVERRIDE_SPAN_OUT_BETA_CTRL (int *nspn, double span_out_beta_ctrl[])
 void override_span_out_beta_ctrl_(int *nspn, double span_out_beta_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=21;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1441,6 +1472,7 @@ void OVERRIDE_SPAN_CHORD_CTRL (int *nspn, double span_chord_ctrl[])
 void override_span_chord_ctrl_(int *nspn, double span_chord_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=22;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1471,6 +1503,7 @@ void OVERRIDE_SPAN_THK_C_CTRL (int *nspn, double span_thk_c_ctrl[])
 void override_span_thk_c_ctrl_(int *nspn, double span_thk_c_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int   ispn, narg=23;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1501,6 +1534,7 @@ void OVERRIDE_SPAN_DEL_M (int *nspn, double span_del_m[])
 void override_span_del_m_(int *nspn, double span_del_m[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=24;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1531,6 +1565,7 @@ void OVERRIDE_SPAN_DEL_THETA (int *nspn, double span_del_theta[])
 void override_span_del_theta_(int *nspn, double span_del_theta[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=25;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1561,6 +1596,7 @@ void OVERRIDE_SPAN_IN_BETA (int *nspn, double span_in_beta[])
 void override_span_in_beta_(int *nspn, double span_in_beta[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=26;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1591,6 +1627,7 @@ void OVERRIDE_SPAN_OUT_BETA (int *nspn, double span_out_beta[])
 void override_span_out_beta_(int *nspn, double span_out_beta[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=27;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1621,6 +1658,7 @@ void OVERRIDE_SPAN_CHORD (int *nspn, double span_chord[])
 void override_span_chord_(int *nspn, double span_chord[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=28;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1651,6 +1689,7 @@ void OVERRIDE_SPAN_THK_C (int *nspn, double span_thk_c[])
 void override_span_thk_c_(int *nspn, double span_thk_c[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=29;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1681,6 +1720,7 @@ void OVERRIDE_SPAN_U_MAX (int *nspn, double span_u_max[])
 void override_span_u_max_(int *nspn, double span_u_max[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=30;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1711,6 +1751,7 @@ void OVERRIDE_SPAN_CURV_CTRL (int *nspn, double span_curv_ctrl[])
 void override_span_curv_ctrl_(int *nspn, double span_curv_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=31;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1741,6 +1782,7 @@ void OVERRIDE_SPAN_THK_CTRL (int *nspn, double span_thk_ctrl[])
 void override_span_thk_ctrl_(int *nspn, double span_thk_ctrl[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=32;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1771,6 +1813,7 @@ void OVERRIDE_OFFSETS (double offsets[])
 void override_offsets_(double offsets[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ioffset, narg=33;
 
     if (udps[numUdp].arg[narg].size == 2) {
@@ -1801,6 +1844,7 @@ void OVERRIDE_HUB_INF_OFFSET (double hub_inf_offset[])
 void override_hub_inf_offset_(double hub_inf_offset[])
 #endif
 {
+    TB_UDP_LOCALS
     int    narg=34;
 
     if (udps[numUdp].arg[narg].size == 1) {
@@ -1829,6 +1873,7 @@ void OVERRIDE_TIP_INF_OFFSET (double tip_inf_offset[])
 void override_tip_inf_offset_(double tip_inf_offset[])
 #endif
 {
+    TB_UDP_LOCALS
     int    narg=35;
 
     if (udps[numUdp].arg[narg].size == 1) {
@@ -1857,6 +1902,7 @@ void OVERRIDE_NACA_LE_RADIUS (int *nspn, double naca_le_radius[])
 void override_naca_le_radius_(int *nspn, double naca_le_radius[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=36;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1887,6 +1933,7 @@ void OVERRIDE_NACA_U_MAX (int *nspn, double naca_u_max[])
 void override_naca_u_max_(int *nspn, double naca_u_max[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=37;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1917,6 +1964,7 @@ void OVERRIDE_NACA_T_MAX (int *nspn, double naca_t_max[])
 void override_naca_t_max_(int *nspn, double naca_t_max[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=38;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
@@ -1947,6 +1995,7 @@ void OVERRIDE_NACA_T_TE (int *nspn, double naca_t_te[])
 void override_naca_t_te_(int *nspn, double naca_t_te[])
 #endif
 {
+    TB_UDP_LOCALS
     int    ispn, narg=39;
 
     if (udps[numUdp].arg[narg].size == *nspn) {
