@@ -143,3 +143,17 @@ def test_thickness_formats(tmp_path):
         np.testing.assert_allclose(s[:, 0], u)
         np.testing.assert_allclose(s[:, 1], 2 * half, atol=1e-12)
     assert read_thickness(tmp_path, "other", 4) == []
+def test_camber_line_data(tct_geometry):
+    """Camber line by curvature control: what T-Blade3 built equals the spline of the control points."""
+    from tblade3.camber import curvature_spline
+
+    geo = tct_geometry
+    data, controls, scale = geo.camber_data, geo.curvature_controls, geo.curvature_scale
+    assert data.shape == (21, 121, 4) and controls.shape == (21, 14) and scale.shape == (21,)
+    assert np.all(data[:, 0, 0] == 0.0) and np.all(data[:, -1, 0] == 1.0)
+    assert np.all(controls[:, 0] == 0.0) and np.all(controls[:, 6] == 1.0)
+    for s in (0, 10, 20):
+        u, cur = curvature_spline(controls[s, :7], controls[s, 7:], 200)
+        assert abs(u[0]) < 1e-12 and abs(u[-1] - 1.0) < 1e-12 and cur[0] == pytest.approx(controls[s, 7])
+        built = data[s, :, 3]
+        assert np.abs(np.interp(data[s, :, 0], u, cur) * scale[s] - built).max() < 1e-4 * np.abs(built).max()

@@ -21,14 +21,14 @@ class ParamTable(QWidget):
     ``columns`` is a list of (header, parameter prefix), e.g. [("span", "sweep.span"), ("delta_m", "sweep")].
     Rows follow the number of parameters that exist. ``on_add`` / ``on_remove`` (optional) are called
     with the selected row index to insert a row after it or delete it; they must make the change
-    through ``controller.edit`` so it can be undone.
+    through ``controller.edit`` so it can be undone. ``noun`` names a row on the two buttons.
     """
 
     rowSelected = Signal(int)
 
     def __init__(self, controller: Controller, columns: list[tuple[str, str]],
                  on_add: Callable[[int], None] | None = None, on_remove: Callable[[int], None] | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, noun: str = "point"):
         super().__init__(parent)
         self.controller = controller
         self.columns = columns
@@ -48,11 +48,11 @@ class ParamTable(QWidget):
         if on_add or on_remove:
             buttons = QHBoxLayout()
             if on_add:
-                add = QPushButton("Add point")
+                add = QPushButton(f"Add {noun}")
                 add.clicked.connect(lambda: on_add(max(self.table.currentRow(), 0)))
                 buttons.addWidget(add)
             if on_remove:
-                remove = QPushButton("Remove point")
+                remove = QPushButton(f"Remove {noun}")
                 remove.clicked.connect(lambda: self.table.currentRow() >= 0 and on_remove(self.table.currentRow()))
                 buttons.addWidget(remove)
             buttons.addStretch(1)

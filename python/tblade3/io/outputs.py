@@ -356,6 +356,15 @@ def read_run_dir(path: str | Path, casename: str | None = None, row: int | None 
         p = path / name
         return _read_points(p, ncols) if p.exists() and p.stat().st_size else None
 
+    cfiles = _numbered(path, r"curvature_data\.(\d+)\." + cn)
+    camber_data = _stack([_load_fixed(p) for p in cfiles], "camber-line data") if len(cfiles) == nsec else None
+    p = path / f"curvature_span_variation.{casename}.dat"
+    curvature_controls = curvature_scale = None
+    if camber_data is not None and p.exists() and p.stat().st_size:
+        table = _load_fixed(p, 20)              # per section: u1..u<ncp>, cur1..cur<ncp>, scale factor
+        if len(table) == nsec and table.shape[1] % 2 == 1:
+            curvature_controls, curvature_scale = table[:, :-1], table[:, -1]
+
     warnings = "\n".join(line.strip() for line in _read_text(path / "error.log").splitlines()
                          if line.strip() and line.strip() != "T-Blade3 ERROR LOG FILE")
 
@@ -370,6 +379,9 @@ def read_run_dir(path: str | Path, casename: str | None = None, row: int | None 
         casing=optional_points(f"casing.{casename}.sldcrv", 3),
         le_te=optional_points(f"LE_TE_intersection.{casename}.dat", 4),
         thickness=read_thickness(path, casename, nsec),
+        camber_data=camber_data,
+        curvature_controls=curvature_controls,
+        curvature_scale=curvature_scale,
         derivatives=(read_derivatives(path, nsec, npt)
                      if derivatives and (path / "derivative_files").is_dir() else None),
         log=_read_text(path / "T-Blade3_run.log"),

@@ -579,5 +579,52 @@ def test_airfoils_tab(qtbot, case_dir):
     c.undo_stack.undo()
     _settled(qtbot, c, "2")
     np.testing.assert_array_equal(tab.plot._items["sec 10"].getData()[1], curve)
+def test_camber_tab(qtbot, case_dir):
+    from PySide6.QtCore import Qt
+
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Camber")
+    qtbot.wait(50)
+    data = row.aux.curvature.data.copy()
+    assert tab.stations.table.rowCount() == len(data) == 8 and tab.points_table.rowCount() == 7
+    assert tab.points._pos.shape == (7, 2) and tab.span_points._pos.shape == (8, 2)
+    assert tab.points_table.item(1, 0).text() == "0.15" and tab.column_box.currentData() == "cur1"
+    assert not tab.points_table.item(0, 0).flags() & Qt.ItemIsEditable        # u1 is fixed at 0
+    assert len([n for n in tab.result_plot.names() if n.startswith("sec")]) == 21
+    assert "built" in tab.span_plot.names()
+    built = row.geometry.sections.copy()
+
+    tab.stations.select_row(3)                                                # station 4, span 0.35
+    assert tab.station == 3 and tab.points._pos[2, 1] == row.get("cur3[4]")
+    c.begin_drag()                                                            # drag chordwise point 3 in two moves
+    tab._point_dragged(2, 0.30, 0.5)
+    tab._point_dragged(2, 0.90, 0.7)                                          # location stops short of point 4
+    assert row.get("cur3[4]") == 0.7 and row.get("u3[4]") == pytest.approx(0.5 - 1e-4)
+    assert c.undo_stack.count() == 1 and tab.points_table.item(2, 1).text() == "0.7"
+    qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
+    assert np.abs(row.geometry.sections - built).max() > 0.01
+
+    tab._point_clicked(4)                                                     # its value along the span
+    assert tab.column_box.currentData() == "cur5" and tab.span_points._pos[3, 0] == row.get("cur5[4]")
+    tab._span_point_dragged(0, 0.2, 0.0)
+    assert row.get("cur5[1]") == 0.2
+
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab._add_station(3)                                                   # between span 0.35 and 0.65
+    assert len(row.aux.curvature.data) == 9 and row.get("curvature.span[5]") == pytest.approx(0.5)
+    assert tab.stations.table.rowCount() == 9 and tab.station == 4 and "cur7[9]" in row.parameters
+    tab._remove_station(4)
+    assert len(row.aux.curvature.data) == 8 and "cur7[9]" not in row.parameters
+    for _ in range(4):
+        c.undo_stack.undo()
+    assert c.undo_stack.index() == 0 and np.array_equal(row.aux.curvature.data, data)
+    qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
+    assert np.array_equal(row.geometry.sections, built)
+
+    tab.quantity_box.setCurrentIndex(1)                                       # camber line: starts and ends at zero
+    y = tab.result_plot._items["sec10"].getData()[1]
+    assert abs(y[0]) < 1e-9 and abs(y[-1]) < 1e-6 and np.abs(y).max() > 0.01
     c.undo_stack.setClean()
     window.close()

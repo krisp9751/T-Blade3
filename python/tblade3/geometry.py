@@ -38,6 +38,10 @@ class Geometry:
     # per section (n, 2): chord fraction u, full thickness / chord (thickness_data.<i>.<cn>); an empty
     # (0, 2) array for a section T-Blade3 wrote no thickness file for (airfoil type other than sect1)
     thickness: list[np.ndarray] = field(default_factory=list)
+    # Camber line by curvature control (None otherwise):
+    camber_data: np.ndarray | None = None    # (nsec, n, 4): chord fraction u, camber v, slope dv/du, curvature
+    curvature_controls: np.ndarray | None = None   # (nsec, 2*ncp): u1..u<ncp>, cur1..cur<ncp> at each section
+    curvature_scale: np.ndarray | None = None      # (nsec,): factor T-Blade3 applies to cur1.. to meet the blade angles
     derivatives: Derivatives | None = None
     log: str = ""                            # T-Blade3_run.log
     warnings: str = ""                       # error.log (warnings of a successful run)

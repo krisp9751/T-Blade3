@@ -204,8 +204,7 @@ class SensitivitiesTab(RowTab):
             else:
                 plot.remove("d")
                 plot.hide()
-        self.aux_note.setText("" if shown else "T-Blade3 writes stagger and throat derivatives only for the "
-                                               "parameters it differentiates analytically.")
+        self.aux_note.setText("" if shown else "T-Blade3 gives no stagger or throat derivative for this parameter.")
 
     @staticmethod
     def _span(geo) -> np.ndarray:

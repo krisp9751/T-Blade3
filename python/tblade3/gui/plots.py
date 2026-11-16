@@ -35,7 +35,8 @@ def muted_colour() -> str:
 
 def ramp_colours(n: int) -> list[str]:
     """n colours along the one-hue ramp, for an ordered family of curves."""
-    stops = np.array([[int(c[i:i + 2], 16) for i in (1, 3, 5)] for c in (RAMP if not is_dark() else RAMP[::-1])],
+    # Leave out the step closest to the background (lightest on white, darkest on the dark theme).
+    stops = np.array([[int(c[i:i + 2], 16) for i in (1, 3, 5)] for c in (RAMP[1:] if not is_dark() else RAMP[-2::-1])],
                      dtype=float)
     if n <= 1:
         idx = np.array([len(stops) / 2.0])

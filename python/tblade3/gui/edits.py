@@ -80,26 +80,30 @@ def replace_table_data(controller: Controller, row_id: str, table_get: Callable[
 
 
 def insert_table_row(controller: Controller, row_id: str, table_get: Callable[[], Table], index: int,
-                     what: str) -> None:
+                     what: str) -> int:
     """Add a row after row ``index`` of a spancontrol Table, halfway to the next one (undoable).
 
     An empty table gets a row at the hub and one at the tip with zero values; a single row is
-    copied to the other end of the span.
+    copied to the other end of the span. Returns the index of the new row.
     """
     data = table_get().data
     n, ncol = data.shape
     if n == 0:
         new = np.zeros((2, ncol))
         new[:, 0] = [0.0, 1.0]
+        added = 1
     elif n == 1:
         other = data[0].copy()
         other[0] = 1.0 if data[0, 0] < 1.0 else 0.0
         new = np.vstack([data, other])
         new = new[np.argsort(new[:, 0], kind="stable")]
+        added = 1 if other[0] == 1.0 else 0
     else:
         i = min(max(index, 0), n - 2)
         new = np.insert(data, i + 1, 0.5 * (data[i] + data[i + 1]), axis=0)
+        added = i + 1
     replace_table_data(controller, row_id, table_get, new, f"Add a {what} control point")
+    return added
 
 
 def remove_table_row(controller: Controller, row_id: str, table_get: Callable[[], Table], index: int,

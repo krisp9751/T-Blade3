@@ -752,9 +752,10 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
         camber = splinedata(2, :)
         slope  = splinedata(3, :)
 
-        ! If command line argument dev is used write a file with u, v, slope and curvature
-        ! data
-        if (isdev) call write_curvature_data(spline_data, np_side, splinedata, sec, casename)
+        ! Write a file with u, v, slope and curvature data of the camber line
+        ! (curvature_data.<section>.<casename>, like thickness_data; it used
+        ! to be written only with the command line argument dev)
+        call write_curvature_data(spline_data, np_side, splinedata, sec, casename)
 
     end if  ! curv_camber
 
