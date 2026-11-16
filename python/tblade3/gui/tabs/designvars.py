@@ -82,6 +82,7 @@ class DesignVariablesTab(RowTab):
     def refresh_inputs(self) -> None:
         row = self.row
         self.picker.set_parameters(row.parameters if row is not None else None)
+        self.picker.set_unused(row.unused_parameters() if row is not None else {})
         self.picker_label.setText(f"Tick parameters of row {self.row_id} to make them design variables"
                                   if row is not None else "No row selected")
         self._fill_table()
@@ -128,6 +129,11 @@ class DesignVariablesTab(RowTab):
         if no_udp:
             text += (f" {no_udp} of them {'has' if no_udp == 1 else 'have'} no matching udpTblade argument and "
                      f"{'is' if no_udp == 1 else 'are'} left out of the .csm.")
+        case = self.controller.case
+        ignored = sum(bool(case.rows[rid].unused_reason(name)) for rid, name, _ in dvs)
+        if ignored:
+            text += (f" {ignored} of them {'has' if ignored == 1 else 'have'} no effect with the current switches "
+                     "(greyed in the tree on the left).")
         self.summary.setText(text)
         for button in (self.remove_button, self.csm_button, self.values_button):
             button.setEnabled(self.controller.case is not None and (n > 0 or button is self.csm_button))

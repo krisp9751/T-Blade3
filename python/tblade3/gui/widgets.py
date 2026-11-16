@@ -4,15 +4,33 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .controller import Controller
 
 
 def format_number(value: float) -> str:
     return f"{value:.10g}"
+
+
+def mark_unused(item, reason: str | None, columns: tuple[int, ...] = (0,)) -> None:
+    """Grey a table or tree item that T-Blade3 ignores with the current switches, and say why in its tooltip.
+
+    The value stays editable, so it can be prepared before the switch is changed.
+    """
+    palette = QApplication.palette()
+    brush = palette.brush(QPalette.Disabled if reason else QPalette.Active, QPalette.Text)
+    tip = f"Not used: {reason}." if reason else ""
+    for column in columns:
+        if isinstance(item, QTreeWidgetItem):
+            item.setForeground(column, brush)
+            item.setToolTip(column, tip)
+        else:
+            item.setForeground(brush)
+            item.setToolTip(tip)
 
 
 class ParamTable(QWidget):
@@ -89,6 +107,7 @@ class ParamTable(QWidget):
                 self.table.setRowCount(0)
                 return
             params = case.rows[self.row_id].parameters
+            unused = case.rows[self.row_id].unused_parameters()
             n = self._count(params)
             self.table.setRowCount(n)
             for i in range(n):
@@ -104,8 +123,10 @@ class ParamTable(QWidget):
                         item.setText(text)
                     editable = p is not None and j not in self._read_only
                     item.setFlags(item.flags() | Qt.ItemIsEditable if editable else item.flags() & ~Qt.ItemIsEditable)
-                    item.setForeground(self.palette().placeholderText() if j in self._read_only else
-                                       self.palette().text())
+                    if j in self._read_only:
+                        item.setForeground(self.palette().placeholderText())
+                    else:
+                        mark_unused(item, unused.get(f"{prefix}[{i + 1}]"))
         finally:
             self._filling = False
 
@@ -144,6 +165,9 @@ class ValueEdit(QLineEdit):
         p = case.rows[self.row_id].parameters.get(self.name) if case and self.row_id in case.rows else None
         self.setEnabled(p is not None)
         self.setText("" if p is None else format_number(p.value))
+        reason = case.rows[self.row_id].unused_reason(self.name) if p is not None else None
+        self.setToolTip(f"Not used: {reason}." if reason else "")
+        self.setStyleSheet("color: palette(placeholder-text);" if reason else "")
 
     def _commit(self) -> None:
         if self.row_id is None or not self.isEnabled():
@@ -308,6 +332,7 @@ class ParameterTree(QWidget):
         self.checkable = checkable
         self._names: tuple[str, ...] = ()
         self._items: dict[str, QTreeWidgetItem] = {}
+        self._unused: dict[str, str] = {}
         self._filling = False
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter, e.g. sweep or naca.t_max")
@@ -338,12 +363,26 @@ class ParameterTree(QWidget):
         elif self.checkable:
             self.set_checked({name for name, p in parameters.items() if p.is_dv})
 
+    def set_unused(self, reasons: dict[str, str]) -> None:
+        """Grey the parameters T-Blade3 ignores with the current switches (name -> reason)."""
+        if reasons == self._unused:
+            return
+        self._filling = True
+        for name in set(reasons) | set(self._unused):
+            item = self._items.get(name)
+            if item is not None:
+                mark_unused(item, reasons.get(name), (0, 1))
+                item.setText(1, "not used" if name in reasons else item.data(1, self._NAME))
+        self._filling = False
+        self._unused = dict(reasons)
+
     def _fill(self, parameters) -> None:
         keep = self.current
         self._filling = True
         self.tree.blockSignals(True)
         self.tree.clear()
         self._items = {}
+        self._unused = {}
         groups: dict[str, QTreeWidgetItem] = {}
         for p in parameters.values():
             if p.integer:
@@ -359,6 +398,7 @@ class ParameterTree(QWidget):
                 parent = node
             item = QTreeWidgetItem(parent, [p.name, "analytic" if p.deriv is not None else "finite difference"])
             item.setData(0, self._NAME, p.name)
+            item.setData(1, self._NAME, item.text(1))       # kept while the column shows "not used"
             if self.checkable:
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.Checked if p.is_dv else Qt.Unchecked)

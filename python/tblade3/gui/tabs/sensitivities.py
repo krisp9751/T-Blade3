@@ -88,6 +88,7 @@ class SensitivitiesTab(RowTab):
     def refresh_inputs(self) -> None:
         row = self.row
         self.picker.set_parameters(row.parameters if row is not None else None)
+        self.picker.set_unused(row.unused_parameters() if row is not None else {})
         if self.picker.current != self.selected:
             self.selected = self.picker.current      # the parameter no longer exists (other row, table shrank)
         self._describe()
@@ -139,12 +140,25 @@ class SensitivitiesTab(RowTab):
         row, p = self.row, self._parameter()
         if not self.isVisible() or row is None or p is None:
             return
+        if self._no_effect(row, p):
+            return
         if row.geometry is None or not row.is_current or self.controller.is_building(self.row_id):
             self.method_label.setText("Waiting for the geometry to be rebuilt")
             return
         if row.derivative_method(p.name) == "fd" and p.name not in row._fd_cache:
             self.method_label.setText("Finite difference: running T-Blade3 twice…")
         self.controller.request_sensitivity(self.row_id, p.name)
+
+    def _no_effect(self, row, p) -> bool:
+        """True (and say so) if T-Blade3 ignores the parameter with the current switches: nothing to compute."""
+        reason = row.unused_reason(p.name)
+        if reason:
+            self.method_label.setText(f"No effect on the blade: {reason}.")
+            self.peak_label.setText("")
+            self.aux_note.setText("")
+            self._clear_colour()
+            self._clear_plots()
+        return bool(reason)
 
     def _ready(self, row_id: str, name: str) -> None:
         if row_id == self.row_id and name == self.selected and self.isVisible():
@@ -160,6 +174,8 @@ class SensitivitiesTab(RowTab):
     def _show(self) -> None:
         row, p = self.row, self._parameter()
         if not self.isVisible() or row is None or p is None or row.geometry is None or not row.is_current:
+            return
+        if self._no_effect(row, p):
             return
         method = row.derivative_method(p.name)
         if method == "fd" and p.name not in row._fd_cache:

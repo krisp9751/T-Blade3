@@ -321,6 +321,18 @@ class BladeRow:
             return "not used by the modified NACA thickness, which takes its values from the spancontrolinputs file"
         return None
 
+    def unused_parameters(self) -> dict[str, str]:
+        """Every parameter T-Blade3 ignores with the current switches, with the reason (see unused_reason)."""
+        by_prefix: dict[str, str | None] = {}
+        out = {}
+        for name in self.parameters:
+            prefix = re.sub(r"\[\d+\]$", "", name)
+            if prefix not in by_prefix:
+                by_prefix[prefix] = self.unused_reason(name)
+            if by_prefix[prefix]:
+                out[name] = by_prefix[prefix]
+        return out
+
     # -- building --------------------------------------------------------------------------
     @property
     def engine(self) -> Engine:

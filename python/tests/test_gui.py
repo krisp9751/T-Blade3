@@ -628,3 +628,34 @@ def test_camber_tab(qtbot, case_dir):
     assert abs(y[0]) < 1e-9 and abs(y[-1]) < 1e-6 and np.abs(y).max() > 0.01
     c.undo_stack.setClean()
     window.close()
+
+
+def test_unused_inputs_are_greyed(qtbot, case_dir):
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
+
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    grey = QApplication.palette().brush(QPalette.Disabled, QPalette.Text).color()
+    tab = _tab(window, "Sensitivities")
+    qtbot.wait(50)
+    item = tab.picker._items["sec.chord[3]"]                 # chord switch 2: the chord column is not used
+    assert item.foreground(0).color() == grey and "chord" in item.toolTip(0) and item.text(1) == "not used"
+    assert tab.picker._items["sweep[4]"].toolTip(0) == ""
+    tab.select("sec.chord[3]")
+    assert tab.method_label.text().startswith("No effect") and tab._coloured is None
+    assert "sec.chord[3]" not in row._fd_cache               # no finite-difference runs for it
+
+    c.set_attribute("2", row.main, "curvature_control", 0)   # switch changes: the camber controls go grey
+    assert tab.picker._items["cur3[2]"].foreground(0).color() == grey
+    c.undo_stack.undo()
+    assert tab.picker._items["cur3[2]"].toolTip(0) == "" and tab.picker._items["cur3[2]"].text(1) == "analytic"
+
+    dv = _tab(window, "Design variables")
+    c.set_design_variable("2", "sec.chord[3]", True)
+    assert "no effect" in dv.summary.text()
+    c.undo_stack.undo()
+    qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
+    c.undo_stack.setClean()
+    window.close()
