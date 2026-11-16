@@ -224,3 +224,44 @@ def test_multi_row_case(tmp_path):
         assert not jac["1"].any()
         assert jac["2"][..., 0].any() and not jac["2"][..., 1].any()
         assert jac["3"][..., 1].any() and not jac["3"][..., 0].any()
+
+
+# -- inputs that a switch makes unused ---------------------------------------------------------
+
+@pytest.mark.parametrize("folder", ["OpenCSM/Case7-28-8/Rotor", "OpenCSM/Wennerstrom_with_umxthk",
+                                    "NACA_thickness_cases/wind_turbine_geometry"])
+def test_parameters_reported_unused_do_not_change_the_geometry(folder):
+    """One parameter of every group that unused_reason reports: perturbing it must leave the blade as it is."""
+    import re
+
+    _library_or_skip()
+    with Case.load(paths.INPUTS_DIR / folder) as case:
+        row = next(iter(case.rows.values()))
+        base = row.build(derivatives=False).sections.copy()
+        groups = {}
+        for name, p in row.parameters.items():
+            if not p.integer and row.unused_reason(name):
+                groups.setdefault(re.sub(r"\[\d+\]$", "", name), name)
+        assert "sec.mrel_in" in groups and "stk_u" in groups and len(groups) >= 6
+        assert row.unused_reason("sweep[1]") is None and row.unused_reason("sec.in_beta[1]") is None
+        for prefix, name in groups.items():
+            x = row.get(name)
+            row.set(name, x + 0.05 * max(abs(x), 1.0))
+            assert np.array_equal(row.build(derivatives=False).sections, base), (prefix, row.unused_reason(name))
+            row.set(name, x)
+
+
+def test_unused_reason_follows_the_switches(tct_copy):
+    row = tct_copy.rows["2"]
+    assert row.main.chord_switch == 2 and row.main.angle_spline == "inci_dev_spline"
+    assert row.unused_reason("chord_multiplier[1]") is None and row.unused_reason("in_beta[1]") is None
+    assert "chord" in row.unused_reason("sec.chord[1]") and row.unused_reason("sec.incidence[1]")
+    assert row.unused_reason("cur3[2]") is None and "NACA" in row.unused_reason("lethk[1]")
+    row.main.chord_switch = 1
+    row.main.angle_spline = ""
+    row.main.curvature_control = 0
+    assert row.unused_reason("sec.chord[1]") is None and row.unused_reason("chord_multiplier[1]")
+    assert row.unused_reason("in_beta[1]") and row.unused_reason("sec.incidence[1]") is None
+    assert row.unused_reason("cur3[2]") and row.unused_reason("curvature.span[1]")
+    with pytest.raises(KeyError):
+        row.unused_reason("nothing")

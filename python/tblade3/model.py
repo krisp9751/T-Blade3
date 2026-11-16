@@ -284,6 +284,43 @@ class BladeRow:
         except KeyError:
             raise KeyError(f"row {self.row_id} has no parameter {name!r}") from None
 
+    def unused_reason(self, name: str) -> str | None:
+        """Why T-Blade3 ignores this parameter with the current switches, or None if it uses it.
+
+        Only cases that follow directly from a switch in the main input are reported (checked against
+        readinput.f90, 3dbgb.f90 and bladegen.f90); None does not promise that the value matters.
+        """
+        self._param(name)
+        prefix = re.sub(r"\[\d+\]$", "", name)
+        m = self.main
+        if prefix in ("sec.mrel_in", "sec.sec_flow_angle"):
+            return "T-Blade3 reads this column but does not use it"
+        if prefix == "sec.chord" and m.chord_switch != 1:
+            return "used only with the actual-chord switch set to 1"
+        if prefix.startswith("chord_multiplier") and m.chord_switch != 2:
+            return "used only with the actual-chord switch set to 2 (spline)"
+        if prefix in ("in_beta", "in_beta.span") and m.angle_spline not in ("inletspline", "inoutspline", "inci_dev_spline"):
+            return "used only with a spanwise spline of the inlet angle or incidence (angle switch)"
+        if prefix in ("out_beta", "out_beta.span") and m.angle_spline not in ("outletspline", "inoutspline",
+                                                                              "inci_dev_spline"):
+            return "used only with a spanwise spline of the exit angle or deviation (angle switch)"
+        if prefix in ("sec.incidence", "sec.deviation") and m.angle_spline:
+            return f"not used with the angle switch {m.angle_spline}: the spanwise control points replace it"
+        if prefix in ("sec.in_beta", "sec.out_beta") and m.angle_spline in ("inletspline", "outletspline", "inoutspline"):
+            return f"not read with the angle switch {m.angle_spline}"
+        if prefix in ("stk_u", "stk_v") and m.variable_stacking == 0:
+            return "used only with variable radial stacking; the stacking axis applies to all sections"
+        if prefix == "clustering_parameter" and m.clustering_switch == 0:
+            return "not used with uniform clustering"
+        if isinstance(self.aux, SpanControl):
+            curvature = set(map(_safe, self.aux.curvature.columns[1:])) | {"curvature.span"}
+            if prefix in curvature and m.curvature_control == 0:
+                return "used only when the camber line is defined by curvature control"
+        if m.thickness_distribution == 5 and prefix in ("sec.tc_max", "umxthk", "lethk", "tethk", "tm_c", "u_max",
+                                                        "thickness.span"):
+            return "not used by the modified NACA thickness, which takes its values from the spancontrolinputs file"
+        return None
+
     # -- building --------------------------------------------------------------------------
     @property
     def engine(self) -> Engine:
