@@ -274,3 +274,44 @@ def test_design_variables_tab(qtbot, case_dir, tmp_path):
     with Case.load(case_dir, engine="executable") as again:
         assert again.dv.names == ["row2.hub_offset", "row2.sweep[4]"] and again.dv.bounds[1] == (-0.05, None)
     window.close()
+
+
+def test_spanwise_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Spanwise controls")
+    qtbot.wait(50)
+    assert tab.table.table.rowCount() == 4 and tab.points._pos.shape == (4, 2)       # sweep
+    assert "built" in tab.plot.names() and tab.built_plot.isHidden()
+    built = row.geometry.sections.copy()
+
+    c.begin_drag()                                                                    # drag point 4 in two moves
+    tab._point_dragged(3, 0.01, 1.0)
+    tab._point_dragged(3, 0.02, 1.0)
+    assert row.get("sweep[4]") == 0.02 and c.undo_stack.count() == 1
+    assert tab.points._pos[3, 0] == 0.02
+    qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
+    assert np.abs(row.geometry.sections - built).max() > 0.1
+
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab._add_point(1)                                                             # between points 2 and 3
+    assert len(row.main.sweep) == 5 and row.get("sweep.span[3]") == pytest.approx(0.375)
+    assert tab.table.table.rowCount() == 5 and "sweep[5]" in row.parameters
+    tab._remove_point(2)
+    assert len(row.main.sweep) == 4 and "sweep[5]" not in row.parameters
+    c.undo_stack.undo()
+    c.undo_stack.undo()
+    assert len(row.main.sweep) == 4 and row.get("sweep[4]") == 0.02
+    c.undo_stack.undo()
+    assert row.get("sweep[4]") == 0.0
+    qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
+    assert np.array_equal(row.geometry.sections, built)
+
+    tab.control_list.setCurrentRow(2)                                                 # inlet angle: separate result plot
+    assert tab.table.table.rowCount() == 8 and not tab.built_plot.isHidden()
+    assert "built" not in tab.plot.names()
+    tab.control_list.setCurrentRow(6)                                                 # u_max: not in this case's file
+    assert not tab.table.isEnabled() and tab.points._pos.shape == (0, 2)
+    c.undo_stack.setClean()
+    window.close()
