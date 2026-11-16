@@ -79,8 +79,32 @@ class _Edit(QUndoCommand):
         self.c._after_edit(self.row_id, structural=True)
 
 
+class _SetDesignVariable(QUndoCommand):
+    """Flag or unflag a parameter as a design variable, or change its bounds. Does not rebuild."""
+
+    def __init__(self, controller: Controller, row_id: str, name: str, new: tuple[bool, float | None, float | None]):
+        super().__init__(f"{'Flag' if new[0] else 'Unflag'} {name} as a design variable")
+        self.c, self.row_id, self.name, self.new = controller, row_id, name, new
+        p = controller.case.rows[row_id].parameters[name]
+        self.old = (p.is_dv, p.lower, p.upper)
+        if self.old[0] and new[0]:
+            self.setText(f"Change the bounds of {name}")
+
+    def _apply(self, state: tuple[bool, float | None, float | None]) -> None:
+        p = self.c.case.rows[self.row_id].parameters[self.name]     # looked up now: parameters may be rebuilt
+        p.is_dv, p.lower, p.upper = state
+        self.c.designVariablesChanged.emit()
+
+    def redo(self) -> None:
+        self._apply(self.new)
+
+    def undo(self) -> None:
+        self._apply(self.old)
+
+
 class Controller(QObject):
     caseChanged = Signal()                  # a case was loaded or closed
+    designVariablesChanged = Signal()       # a design-variable flag or bound changed
     inputsChanged = Signal(str)             # row id: values or table sizes changed
     buildStarted = Signal(str)              # row id
     buildFinished = Signal(str)             # row id: row.geometry is new
@@ -174,6 +198,16 @@ class Controller(QObject):
             return
         self.edit(row_id, text or f"Change {attr}", lambda: setattr(obj, attr, value),
                   lambda: setattr(obj, attr, old))
+
+    def set_design_variable(self, row_id: str, name: str, is_dv: bool, lower: float | None = None,
+                            upper: float | None = None) -> None:
+        """Flag (with optional bounds) or unflag a parameter as a design variable, undoable."""
+        p = self.case.rows[row_id].parameters[name]
+        if p.integer and is_dv:
+            raise ValueError(f"{name!r} is an integer and cannot be a design variable")
+        new = (True, lower, upper) if is_dv else (False, None, None)
+        if new != (p.is_dv, p.lower, p.upper):
+            self.undo_stack.push(_SetDesignVariable(self, row_id, name, new))
 
     def _after_edit(self, row_id: str, structural: bool) -> None:
         if structural:

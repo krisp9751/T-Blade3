@@ -62,6 +62,9 @@ def export_csm(case: Case, path: str | Path | None = None, all_parameters: bool 
         name = next(iter(case.rows.values())).main.casename
         path = case.folder / f"{name}.csm"
     path = Path(path)
-    case.save(path.parent)
+    folder = case.folder
+    case.save(path.parent)              # the script names the input files next to it
+    if folder is not None:
+        case.folder = folder            # exporting elsewhere does not move the case
     path.write_text(csm_text(case, all_parameters))
     return path

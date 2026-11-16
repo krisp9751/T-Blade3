@@ -4,8 +4,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLineEdit, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLineEdit,
+                               QPushButton, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from .controller import Controller
 
@@ -189,3 +190,138 @@ class ChoiceBox(QComboBox):
             return
         obj = self.target(self.controller.case.rows[self.row_id])
         self.controller.set_attribute(self.row_id, obj, self.attr, self.currentData(), self.text)
+
+
+class ParameterTree(QWidget):
+    """All continuous parameters of a blade row as a tree by group, with a text filter.
+
+    ``selected(name)`` is emitted when a parameter is picked. With ``checkable`` each parameter has
+    a check box showing its design-variable flag; ``toggled(name, on)`` is emitted when the user
+    changes one (the tree does not change the model itself).
+    """
+
+    selected = Signal(str)
+    toggled = Signal(str, bool)
+    _NAME = Qt.UserRole
+
+    def __init__(self, checkable: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.checkable = checkable
+        self._names: tuple[str, ...] = ()
+        self._items: dict[str, QTreeWidgetItem] = {}
+        self._filling = False
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter, e.g. sweep or naca.t_max")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.analytic_only = QCheckBox("Only parameters with an analytic derivative")
+        self.analytic_only.toggled.connect(self._apply_filter)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Parameter", "Derivative"])
+        self.tree.setUniformRowHeights(True)
+        self.tree.setColumnWidth(0, 250)
+        self.tree.currentItemChanged.connect(self._current_changed)
+        self.tree.itemChanged.connect(self._item_changed)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.filter_edit)
+        layout.addWidget(self.analytic_only)
+        layout.addWidget(self.tree, 1)
+
+    # -- content ----------------------------------------------------------------------------
+    def set_parameters(self, parameters) -> None:
+        """Show these parameters (a dict name -> Parameter, or None). Rebuilds only if the names changed."""
+        parameters = parameters or {}
+        names = tuple(parameters)
+        if names != self._names:
+            self._names = names
+            self._fill(parameters)
+        elif self.checkable:
+            self.set_checked({name for name, p in parameters.items() if p.is_dv})
+
+    def _fill(self, parameters) -> None:
+        keep = self.current
+        self._filling = True
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        self._items = {}
+        groups: dict[str, QTreeWidgetItem] = {}
+        for p in parameters.values():
+            if p.integer:
+                continue
+            parent, path = None, ""
+            for piece in p.group.split("/"):
+                path = f"{path}/{piece}" if path else piece
+                node = groups.get(path)
+                if node is None:
+                    node = QTreeWidgetItem(parent or self.tree.invisibleRootItem(), [piece])
+                    node.setFlags(Qt.ItemIsEnabled)
+                    groups[path] = node
+                parent = node
+            item = QTreeWidgetItem(parent, [p.name, "analytic" if p.deriv is not None else "finite difference"])
+            item.setData(0, self._NAME, p.name)
+            if self.checkable:
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.Checked if p.is_dv else Qt.Unchecked)
+            self._items[p.name] = item
+        self.tree.blockSignals(False)
+        self._filling = False
+        self._apply_filter()
+        if keep in self._items:
+            self.tree.blockSignals(True)
+            self.tree.setCurrentItem(self._items[keep])
+            self.tree.blockSignals(False)
+            self.tree.scrollToItem(self._items[keep])
+
+    def set_checked(self, names: set[str]) -> None:
+        self._filling = True
+        for name, item in self._items.items():
+            state = Qt.Checked if name in names else Qt.Unchecked
+            if item.checkState(0) != state:
+                item.setCheckState(0, state)
+        self._filling = False
+
+    # -- selection --------------------------------------------------------------------------
+    @property
+    def current(self) -> str | None:
+        item = self.tree.currentItem()
+        return item.data(0, self._NAME) if item is not None else None
+
+    def select(self, name: str) -> None:
+        """Select a parameter by its local name; KeyError if it is not in the tree."""
+        self.tree.setCurrentItem(self._items[name])
+        self.tree.scrollToItem(self._items[name])
+
+    def _current_changed(self, item: QTreeWidgetItem | None, _previous=None) -> None:
+        name = item.data(0, self._NAME) if item is not None else None
+        if name is not None:
+            self.selected.emit(name)
+
+    def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        name = item.data(0, self._NAME)
+        if not self._filling and self.checkable and column == 0 and name is not None:
+            self.toggled.emit(name, item.checkState(0) == Qt.Checked)
+
+    # -- filter -----------------------------------------------------------------------------
+    def _apply_filter(self, *_args) -> None:
+        text = self.filter_edit.text().strip().lower()
+        analytic = self.analytic_only.isChecked()
+
+        def visit(node: QTreeWidgetItem) -> bool:
+            name = node.data(0, self._NAME)
+            if name is not None:
+                show = (text in name.lower()) and (not analytic or node.text(1) == "analytic")
+            else:
+                show = False
+                for i in range(node.childCount()):
+                    show = visit(node.child(i)) or show
+                if text or analytic:
+                    node.setExpanded(show and (bool(text) or node.childCount() <= 200))
+            node.setHidden(not show)
+            return show
+
+        root = self.tree.invisibleRootItem()
+        self.tree.setUpdatesEnabled(False)
+        for i in range(root.childCount()):
+            visit(root.child(i))
+        self.tree.setUpdatesEnabled(True)

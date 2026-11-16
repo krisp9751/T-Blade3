@@ -177,3 +177,100 @@ def test_main_window(qtbot, tmp_path):
     c.undo_stack.undo()
     c.undo_stack.setClean()
     window.close()
+
+
+def _window(qtbot, folder):
+    from tblade3.gui.main_window import MainWindow
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    assert window.open_case(folder)
+    c = window.controller
+    qtbot.waitUntil(lambda: all(c.row(r).geometry is not None for r in c.case.rows), timeout=BUILD)
+    qtbot.wait(100)
+    return window
+
+
+def _tab(window, title):
+    tab = next(t for t in window.tab_widgets if t.title == title)
+    window.tabs.setCurrentWidget(tab)
+    return tab
+
+
+def test_sensitivities_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c, view = window.controller, window.view
+    tab = _tab(window, "Sensitivities")
+    qtbot.wait(50)
+    tab.select("naca.t_max[3]")                                         # analytic: shown at once
+    assert view._scalar["2"] is not None and "naca.t_max[3]" in view._scalar["2"][1]
+    assert view._scalar["2"][0].shape == view._surfaces["2"][0].points.shape[:2]
+    assert "Analytic" in tab.method_label.text() and "section" in tab.peak_label.text()
+    assert not tab.throat_plot.isHidden()
+    normal = view._scalar["2"][0].copy()
+    tab.component_box.setCurrentIndex(tab.component_box.findData("x"))
+    assert not np.array_equal(view._scalar["2"][0], normal)
+
+    with qtbot.waitSignal(c.sensitivityReady, timeout=BUILD):
+        tab.select("hub_offset")                                        # finite difference in the background
+    assert "finite difference" in tab.method_label.text().lower()
+    assert "hub_offset" in view._scalar["2"][1] and tab.throat_plot.isHidden()
+
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):              # an edit: the contour follows the new blade
+        c.set_value("2", "sweep[4]", 0.03)
+    with qtbot.waitSignal(c.sensitivityReady, timeout=BUILD):
+        pass
+    assert "hub_offset" in view._scalar["2"][1]
+
+    tab.picker.filter_edit.setText("cur3")
+    assert tab.picker._items["sweep[1]"].isHidden() and not tab.picker._items["cur3[4]"].isHidden()
+    window.tabs.setCurrentIndex(0)                                      # leaving the tab removes the contour
+    assert view._scalar["2"] is None
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_design_variables_tab(qtbot, case_dir, tmp_path):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    tab = _tab(window, "Design variables")
+    qtbot.wait(50)
+    assert tab.table.rowCount() == 0
+    from PySide6.QtCore import Qt
+    tab.picker._items["sweep[4]"].setCheckState(0, Qt.Checked)          # tick in the tree
+    tab.picker._items["hub_offset"].setCheckState(0, Qt.Checked)
+    assert c.case.dv.names == ["row2.hub_offset", "row2.sweep[4]"] and tab.table.rowCount() == 2
+    assert tab.table.item(1, 0).text() == "row2.sweep[4]" and tab.table.item(1, 4).text() == "analytic"
+    assert tab.table.item(1, 5).text() == "span_del_m[4]" and tab.table.item(0, 4).text() == "finite difference"
+    tab.table.item(1, 2).setText("-0.05")                               # bounds
+    tab.table.item(1, 3).setText("0.05")
+    assert c.case.dv.bounds[1] == (-0.05, 0.05)
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab.table.item(1, 1).setText("0.02")                            # value
+    assert c.row("2").get("sweep[4]") == 0.02
+    assert not c.undo_stack.isClean()
+
+    tab.export_values(tmp_path / "dv.txt")
+    assert list(np.loadtxt(tmp_path / "dv.txt", ndmin=1)) == [0.0, 0.02]
+    out = tmp_path / "esp" / "rotor.csm"
+    out.parent.mkdir()
+    tab.export_csm(out)
+    text = out.read_text()
+    assert "DESPMTR   span_del_m" in text and "DESPMTR   offsets" in text and (out.parent / TCT_MAIN).is_file()
+    assert c.case.folder == case_dir                                    # exporting does not move the case
+
+    c.undo_stack.undo()                                                 # value
+    c.undo_stack.undo()                                                 # upper bound
+    assert c.case.dv.bounds[1] == (-0.05, None) and tab.table.item(1, 3).text() == ""
+    tab.table.selectRow(0)
+    tab.remove_button.click()
+    assert c.case.dv.names == ["row2.sweep[4]"]
+    assert tab.picker._items["hub_offset"].checkState(0) == Qt.Unchecked
+    c.undo_stack.undo()
+    assert len(c.case.dv) == 2 and tab.picker._items["hub_offset"].checkState(0) == Qt.Checked
+
+    c.save()                                                            # flags are saved with the case
+    from tblade3.model import Case
+    with Case.load(case_dir, engine="executable") as again:
+        assert again.dv.names == ["row2.hub_offset", "row2.sweep[4]"] and again.dv.bounds[1] == (-0.05, None)
+    window.close()

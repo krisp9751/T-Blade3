@@ -59,6 +59,8 @@ class Plot(pg.PlotWidget):
         item.setMenuEnabled(False)
         if equal_aspect:
             item.setAspectLocked(True)
+        for side in ("bottom", "left"):
+            item.getAxis(side).enableAutoSIPrefix(False)     # no "(x0.001)" rescaling of the tick labels
         self._legend = item.addLegend(offset=(-8, 8)) if legend else None
         self._labels = (x_label, y_label, title)
         self.apply_theme()
@@ -90,6 +92,12 @@ class Plot(pg.PlotWidget):
         item.setData(np.asarray(x, dtype=float), np.asarray(y, dtype=float), pen=pen,
                      symbol=symbol, symbolSize=7, symbolBrush=colour or series_colour(0), symbolPen=None)
         return item
+
+    def set_labels(self, x_label: str | None = None, y_label: str | None = None, title: str | None = None) -> None:
+        """Change axis labels or the title (None keeps the current one)."""
+        old = self._labels
+        self._labels = tuple(new if new is not None else keep for new, keep in zip((x_label, y_label, title), old))
+        self.apply_theme()
 
     def remove(self, name: str) -> None:
         item = self._items.pop(name, None)
