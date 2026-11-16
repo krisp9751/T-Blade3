@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left)
         splitter.addWidget(self.tabs)
         splitter.addWidget(self.view)
-        splitter.setSizes([170, 830, 600])
+        splitter.setSizes([150, 930, 520])     # wide enough for all ten tab titles
         splitter.setStretchFactor(1, 3)
         splitter.setStretchFactor(2, 2)
         self.setCentralWidget(splitter)
