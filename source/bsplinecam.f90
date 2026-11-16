@@ -160,7 +160,7 @@ subroutine camline(casename, isdev, ncp, np, xcp, ycp, u, ainl, aext, chrdx, win
                    dchrd_dx_inbeta, dchrd_dy_inbeta, dslope_dx_inbeta, dslope_dy_inbeta,               &
                    dcam_dx_inbeta, dcam_dy_inbeta, dsext_dxcp, dsext_dycp, dslope_doutbeta,            &
                    dcam_doutbeta, dsang_doutbeta, dchrd_doutbeta, dchrdx_dcm, dchrd_dcm)
-    use globvar,        only: clustering_switch, cpinbeta, cpoutbeta, cpchord
+    use globvar,        only: clustering_switch, cpinbeta, cpoutbeta, cpchord, analytic_ders
     use file_operations
     use errors
     use funcNsubs
@@ -882,12 +882,15 @@ subroutine camline(casename, isdev, ncp, np, xcp, ycp, u, ainl, aext, chrdx, win
         end do
 
         ! Write sensitivities to output files
-        if (js == 1) then
-            call write_physical_ders (1, .false., 3, 1, dsang_dx_inbeta)
-            call write_physical_ders (1, .false., 3, 2, dsang_dy_inbeta)
-        else
-            call write_physical_ders (1, .true., 3, 1, dsang_dx_inbeta)
-            call write_physical_ders (1, .true., 3, 2, dsang_dy_inbeta)
+        ! (only when analytic derivatives are available, see globvar)
+        if (analytic_ders) then
+            if (js == 1) then
+                call write_physical_ders (1, .false., 3, 1, dsang_dx_inbeta)
+                call write_physical_ders (1, .false., 3, 2, dsang_dy_inbeta)
+            else
+                call write_physical_ders (1, .true., 3, 1, dsang_dx_inbeta)
+                call write_physical_ders (1, .true., 3, 2, dsang_dy_inbeta)
+            end if
         end if
 
 
@@ -898,14 +901,16 @@ subroutine camline(casename, isdev, ncp, np, xcp, ycp, u, ainl, aext, chrdx, win
         end do
 
         ! Write sensitivities to output files
-        if (js == 1) then
-            call write_physical_ders (1, .false., 4, 1, dsang_doutbeta(1, :))
-            call write_physical_ders (1, .false., 4, 2, dsang_doutbeta(2, :))
-        else
-            call write_physical_ders (1, .true., 4, 1, dsang_doutbeta(1, :))
-            call write_physical_ders (1, .true., 4, 2, dsang_doutbeta(2, :))
+        if (analytic_ders) then
+            if (js == 1) then
+                call write_physical_ders (1, .false., 4, 1, dsang_doutbeta(1, :))
+                call write_physical_ders (1, .false., 4, 2, dsang_doutbeta(2, :))
+            else
+                call write_physical_ders (1, .true., 4, 1, dsang_doutbeta(1, :))
+                call write_physical_ders (1, .true., 4, 2, dsang_doutbeta(2, :))
+            end if
+            call final_stagger_ders (dsang_dx_inbeta, dsang_dy_inbeta, dsang_doutbeta)
         end if
-        call final_stagger_ders (dsang_dx_inbeta, dsang_dy_inbeta, dsang_doutbeta)
 
 
         if (isdev) then
@@ -986,7 +991,8 @@ subroutine camline(casename, isdev, ncp, np, xcp, ycp, u, ainl, aext, chrdx, win
         dchrd_dcm(1, i)                 = (1.0/abs(cos(sang))) * dchrdx_dcm(1, i)
         dchrd_dcm(2, i)                 = (1.0/abs(cos(sang))) * dchrdx_dcm(2, i)
     end do
-    call final_chrd_ders (dchrd_dx_inbeta, dchrd_dy_inbeta, dchrd_doutbeta, dchrd_dcm, dchrd_dcurv)
+    if (analytic_ders) &
+        call final_chrd_ders (dchrd_dx_inbeta, dchrd_dy_inbeta, dchrd_doutbeta, dchrd_dcm, dchrd_dcurv)
 
 
 end subroutine camline

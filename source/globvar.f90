@@ -130,6 +130,13 @@ module globvar
     logical                         :: axial_LE, radial_LE
     logical                         :: using_cur1
 
+    ! .true. when the analytic derivatives (T-Blade3 v1.3) are available for
+    ! this case: they need the modified NACA thickness (thick_distr = 5) and
+    ! mean-line curvature control (curv = 1), both from a spancontrolinputs
+    ! file (control_inp_flag = 2). Set in bgb3d_sub after the inputs are read.
+    ! When .false., only the sweep and lean derivatives are computed and written.
+    logical                         :: analytic_ders = .false.
+
 
     
     ! Common memory block

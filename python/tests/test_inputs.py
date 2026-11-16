@@ -18,8 +18,6 @@ from tblade3.io.spancontrol import ControlInputs, SpanControl
 
 CASES = sorted(paths.INPUTS_DIR.rglob("3dbgbinput.*.dat"))
 CASE_IDS = [str(p.relative_to(paths.INPUTS_DIR)) for p in CASES]
-# T-Blade3 itself segfaults on this case (Fortran bug fixed separately)
-CRASHING = {"OpenCSM/Wennerstrom_with_umxthk/3dbgbinput.1.dat"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -79,11 +77,6 @@ def regenerate(files: dict[str, str], main: str) -> dict[str, str]:
 
 def case_files(path: Path) -> dict[str, str]:
     return load_case(path.parent, path.name)
-
-
-def run_xfail(case_id: str):
-    marks = [pytest.mark.xfail(reason="T-Blade3 segfaults on this case", strict=False)] if case_id in CRASHING else []
-    return pytest.param(case_id, marks=marks, id=case_id)
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +141,7 @@ def test_parse_format_parse(path):
             assert line in original
 
 
-@pytest.mark.parametrize("case_id", [run_xfail(c) for c in CASE_IDS])
+@pytest.mark.parametrize("case_id", CASE_IDS)
 def test_regenerated_files_give_identical_geometry(case_id, session_engine, original_runs):
     path = paths.INPUTS_DIR / case_id
     reference = original_runs(case_id)

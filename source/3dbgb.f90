@@ -291,6 +291,24 @@ subroutine bgb3d_sub(fname_in, aux_in, arg2, arg3, arg4)
         control_inp_flag                    = 2
     end if
 
+    ! Analytic derivatives are only implemented for the modified NACA
+    ! thickness with mean-line curvature control from a spancontrolinputs
+    ! file; for all other cases they are skipped (see analytic_ders in globvar)
+    analytic_ders                           = (control_inp_flag == 2 .and. curv == 1 .and. thick_distr == 5)
+    call clear_xyz_ders()
+    if (.not. analytic_ders) then
+        call log_file_exists(log_file, nopen, file_open)
+        if (.not. isquiet) then
+            write(*, *)
+            print *, 'Analytic derivatives need the NACA thickness (thickness distribution switch 5) and'
+            print *, 'curvature control (camber switch 1); only sweep and lean derivatives are written.'
+        end if
+        write(nopen, *) ''
+        write(nopen, *) 'Analytic derivatives need the NACA thickness (thickness distribution switch 5) and'
+        write(nopen, *) 'curvature control (camber switch 1); only sweep and lean derivatives are written.'
+        call close_log_file(nopen, file_open)
+    end if
+
     ! Determine which auxiliary input file should be read
     call log_file_exists(log_file, nopen, file_open)
 

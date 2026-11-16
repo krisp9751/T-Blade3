@@ -55,16 +55,14 @@ def test_runtime_error(engine, tct_files):
     assert engine.run(tct_files, TCT_MAIN).nsec == 21
 
 
-def test_crash_signal(engine):
-    """A segfault in T-Blade3 (known crash for the Wennerstrom thickness case) is reported."""
+def test_wennerstrom_sweep_and_lean_derivatives_only(engine):
+    """Without NACA thickness and curvature control, T-Blade3 writes only sweep and lean derivatives."""
     folder = paths.INPUTS_DIR / "OpenCSM" / "Wennerstrom_with_umxthk"
-    files = load_case(folder, "3dbgbinput.1.dat")
-    try:
-        engine.run(files, "3dbgbinput.1.dat")
-    except TBlade3Error as exc:
-        assert "signal" in exc.message or "exit code" in exc.message
-    else:
-        pytest.skip("Wennerstrom case no longer crashes")
+    g = engine.run(load_case(folder, "3dbgbinput.1.dat"), "3dbgbinput.1.dat")
+    assert g.sections.shape == (21, 241, 3) and np.all(np.isfinite(g.sections))
+    assert {key[0] for key in g.derivatives.xyz} == {1, 2}
+    assert all(np.all(np.isfinite(d)) for d in g.derivatives.xyz.values())
+    assert not g.derivatives.stagger and not g.derivatives.throat
 
 
 def test_timeout(tct_files):
@@ -114,16 +112,10 @@ def test_parallel_engines(tct_files):
     assert b[0].section_table["pitch"][0] == pytest.approx(2 * np.pi / 20)
 
 
-WENNERSTROM_CRASH = pytest.mark.xfail(
-    raises=TBlade3Error, strict=False,
-    reason="T-Blade3 segfaults for thickness type 0: bladegen.f90 allocates u_ders with "
-           "ncp_thk(js), which is only set for NACA thickness")
-
-
 @pytest.mark.parametrize("folder, main", [
     ("NACA_thickness_cases/turbine_geometry", "3dbgbinput.2.dat"),
     ("OpenCSM/Case7-28-8/OGV", "3dbgbinput.3.dat"),
-    pytest.param("OpenCSM/Wennerstrom_with_umxthk", "3dbgbinput.1.dat", marks=WENNERSTROM_CRASH),
+    ("OpenCSM/Wennerstrom_with_umxthk", "3dbgbinput.1.dat"),
 ])
 def test_other_cases(engine, folder, main):
     files = load_case(paths.INPUTS_DIR / folder, main)

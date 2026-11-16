@@ -12,7 +12,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
                     dmprime_dcm,dtheta_dcm)
 
     use globvar,                only: ncp_span_curv, ncp_chord_curv, ncp_span_thk, ncp_chord_thk, cpinbeta, &
-                                      cpoutbeta, cpchord, xxa, yya
+                                      cpoutbeta, cpchord, xxa, yya, analytic_ders
     use file_operations
     use errors
     use funcNsubs
@@ -876,10 +876,12 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
             ! Compute the sensitivity of the NACA thickness distribution
             ! wrt to its thickness parameters
             !
-            call NACA_thickness_derivatives (np, np_cluster, u, thickness, thk_cp(1:ncp_thk(js) - 1, js), u_TE, u_center, &
-                                             TE_radius, a_NACA, d_NACA, u_ders, NACA_ders)
-            if (clustering_switch == 4) &
-                 call meanline_thickness_derivatives (dslope_u, dcam_u, u_ders, slope_ders, cam_ders)
+            if (analytic_ders) then
+                call NACA_thickness_derivatives (np, np_cluster, u, thickness, thk_cp(1:ncp_thk(js) - 1, js), u_TE, u_center, &
+                                                 TE_radius, a_NACA, d_NACA, u_ders, NACA_ders)
+                if (clustering_switch == 4) &
+                     call meanline_thickness_derivatives (dslope_u, dcam_u, u_ders, slope_ders, cam_ders)
+            end if
 
         !
         ! Spline thickness distribution with LE control
@@ -945,9 +947,11 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
 
 
         ! Store meanline derivatives wrt spanwise control points
-        call final_angle_ders (slope, dslope_dx_inbeta, dslope_dy_inbeta, dslope_doutbeta, dslope_dxcp, &
-                               dslope_dycp, slope_ders)
-        call final_cam_ders (dcam_dx_inbeta, dcam_dy_inbeta, dcam_doutbeta, dcam_dxcp, dcam_dycp, cam_ders)
+        if (analytic_ders) then
+            call final_angle_ders (slope, dslope_dx_inbeta, dslope_dy_inbeta, dslope_doutbeta, dslope_dxcp, &
+                                   dslope_dycp, slope_ders)
+            call final_cam_ders (dcam_dx_inbeta, dcam_dy_inbeta, dcam_doutbeta, dcam_dxcp, dcam_dycp, cam_ders)
+        end if
 
 
         ! 
@@ -984,7 +988,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
         ! Compute derivatives of u wrt spanwise control points
         ! of NACA thickness (only for ellipse-based clustering)
         !
-        call compute_final_u_ders()
+        if (analytic_ders) call compute_final_u_ders()
 
 
         ! Airfoil coordinates associated with maximum thickness
@@ -1006,7 +1010,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
         ! distribution parameter control pts.
         !
         if (trim(airfoil) == 'sect1') then
-            if (curv_camber == 1) then
+            if (analytic_ders) then
 
                 call uv_curv_derivatives (thickness, slope, dslope_dxcp, dslope_dycp, dcam_dxcp, dcam_dycp, &
                                           dxbot_dcurv, dxtop_dcurv, dybot_dcurv, dytop_dcurv)
@@ -1056,7 +1060,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
 
         ! Combine top and bottom surface derivatives
         if (trim(airfoil) == 'sect1') then
-            if (curv_camber == 1) then
+            if (analytic_ders) then
 
                 ! Mean-line 2nd derivative control points
                 call combine_uv_derivatives (dxbot_dcurv, dybot_dcurv, dxtop_dcurv, dytop_dcurv, du_dcurv, dv_dcurv)
@@ -1194,7 +1198,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
     ! Derivatives of (m',theta) blade section
     !
     if (trim(airfoil) == 'sect1') then
-        if (curv_camber == 1) then
+        if (analytic_ders) then
 
             ! NACA thickness distribution control points
             call mprime_theta_thk_derivatives (du_dt, dv_dt, chrdx, chrd, sang, dmprime_dt, dtheta_dt)
@@ -1222,7 +1226,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
 
     ! Show warning if NACA thickness or mean-line second derivative
     ! control points are not being used
-    if (trim(airfoil) /= 'sect1' .or. curv_camber /= 1) then
+    if (trim(airfoil) /= 'sect1' .or. .not. analytic_ders) then
 
         msg_1   = "(m',theta) derivatives wrt curvature and thickness control points set to 0."
         msg_2   = "Either the mean-line second derivative or the NACA thickness options are not being used &
@@ -1261,7 +1265,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
         ! and scaled u and camber computed in the
         ! following code
         !
-        call compute_u3_ders (chrdx, chrd, sang, u, camber)
+        if (analytic_ders) call compute_u3_ders (chrdx, chrd, sang, u, camber)
         
         u_translation = u(1)
         camber_trans = camber(1)
@@ -1309,8 +1313,9 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
     !
     ! min_throat_ders in derivatives.f90
     !
-    call min_throat_ders (pitch, angle, sang, j_throat, iup_throat, idwn_throat, &
-                          intersec_coord(1:4, js), min_throat_2D)
+    if (analytic_ders) &
+        call min_throat_ders (pitch, angle, sang, j_throat, iup_throat, idwn_throat, &
+                              intersec_coord(1:4, js), min_throat_2D)
 
 
     !

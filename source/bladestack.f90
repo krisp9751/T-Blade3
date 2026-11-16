@@ -7,7 +7,8 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
                       dth_dinbeta,dm_doutbeta,dth_doutbeta,dm_dcm,dth_dcm)
 
     use globvar,                only: delmp_xcp_ders, delmp_ycp_ders, delta_theta_xcp_ders, delta_theta_ycp_ders, &
-                                      ncp_chord_curv, ncp_span_curv, ncp_span_thk, ncp_chord_thk, cpchord
+                                      ncp_chord_curv, ncp_span_curv, ncp_span_thk, ncp_chord_thk, cpchord, &
+                                      analytic_ders
     use file_operations
     use errors
     use funcNsubs
@@ -473,11 +474,14 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
             mps(i,ia)                   = xa(i,ia) + dmp(ia) + delmp(ia)
 
             ! Compute derivatives of mps wrt input parameters
-            dm3D_dcurv(ia, i, :, :)     = dm_dcurv(ia, i, :, :) - dm_dcurv(ia, ile, :, :)       ! mean-line 2nd derivative
-            dm3D_dthk(ia, i, :, :)      = dm_dthk(ia, i, :, :) - dm_dthk(ia, ile, :, :)         ! NACA thickness
-            dm3D_dinbeta(ia, i, :, :)   = dm_dinbeta(ia, i, :, :) - dm_dinbeta(ia, ile, :, :)   ! in_beta*
-            dm3D_doutbeta(ia, i, :, :)  = dm_doutbeta(ia, i, :, :) - dm_doutbeta(ia, ile, :, :) ! out_beta*
-            dm3D_dcm(ia, i, :, :)       = dm_dcm(ia, i, :, :) - dm_dcm(ia, ile, :, :)           ! chord_multiplier
+            ! (section parameters only when analytic derivatives are available)
+            if (analytic_ders) then
+                dm3D_dcurv(ia, i, :, :)     = dm_dcurv(ia, i, :, :) - dm_dcurv(ia, ile, :, :)       ! mean-line 2nd derivative
+                dm3D_dthk(ia, i, :, :)      = dm_dthk(ia, i, :, :) - dm_dthk(ia, ile, :, :)         ! NACA thickness
+                dm3D_dinbeta(ia, i, :, :)   = dm_dinbeta(ia, i, :, :) - dm_dinbeta(ia, ile, :, :)   ! in_beta*
+                dm3D_doutbeta(ia, i, :, :)  = dm_doutbeta(ia, i, :, :) - dm_doutbeta(ia, ile, :, :) ! out_beta*
+                dm3D_dcm(ia, i, :, :)       = dm_dcm(ia, i, :, :) - dm_dcm(ia, ile, :, :)           ! chord_multiplier
+            end if
 
             ! Sweep control points
             dm3D_dsweep(ia, i, 1, :)    = delmp_xcp_ders(ia, :)
@@ -527,6 +531,9 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
                                 dm3D_dsweep(ia,i,:,:), dx_dsweep(ia,i,:,:))
             call spl_eval_ders (nsp(ia), mps(i,ia), rm(1,ia), rms(1,ia), mp(1,ia), &
                                 dm3D_dsweep(ia,i,:,:), dr_dsweep(ia,i,:,:))
+
+            ! Section parameters only when analytic derivatives are available
+            if (.not. analytic_ders) cycle
 
             ! in_beta*
             call spl_eval_ders (nsp(ia), mps(i,ia), xm(1,ia), xms(1,ia), mp(1,ia), &
@@ -649,25 +656,30 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
             call yz_lean_ders (rb(i, ia), ya(i, ia), delta_theta(ia), delta_theta_xcp_ders(ia, :), &
                                delta_theta_ycp_ders(ia, :), dy_dlean(ia, i, :, :), dz_dlean(ia, i, :, :))
 
-            ! in_beta*
-            call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dinbeta(ia, i, :, :), &
-                                dth_dinbeta(ia, i, :, :), dy_dinbeta(ia, i, :, :), dz_dinbeta(ia, i, :, :))
+            ! Section parameters only when analytic derivatives are available
+            if (analytic_ders) then
 
-            ! out_beta*
-            call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_doutbeta(ia, i, :, :), &
-                                dth_doutbeta(ia, i, :, :), dy_doutbeta(ia, i, :, :), dz_doutbeta(ia, i, :, :))
+                ! in_beta*
+                call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dinbeta(ia, i, :, :), &
+                                    dth_dinbeta(ia, i, :, :), dy_dinbeta(ia, i, :, :), dz_dinbeta(ia, i, :, :))
 
-            ! chord multiplier
-            call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dcm(ia, i, :, :), &
-                                dth_dcm(ia, i, :, :), dy_dcm(ia, i, :, :), dz_dcm(ia, i, :, :))
+                ! out_beta*
+                call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_doutbeta(ia, i, :, :), &
+                                    dth_doutbeta(ia, i, :, :), dy_doutbeta(ia, i, :, :), dz_doutbeta(ia, i, :, :))
 
-            ! mean-line 2nd derivative
-            call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dcurv(ia, i, :, :), &
-                                dth_dcurv(ia, i, :, :), dy_dcurv(ia, i, :, :), dz_dcurv(ia, i, :, :))
+                ! chord multiplier
+                call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dcm(ia, i, :, :), &
+                                    dth_dcm(ia, i, :, :), dy_dcm(ia, i, :, :), dz_dcm(ia, i, :, :))
 
-            ! NACA thickness
-            call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dthk(ia, i, :, :), &
-                                dth_dthk(ia, i, :, :), dy_dthk(ia, i, :, :), dz_dthk(ia, i, :, :))
+                ! mean-line 2nd derivative
+                call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dcurv(ia, i, :, :), &
+                                    dth_dcurv(ia, i, :, :), dy_dcurv(ia, i, :, :), dz_dcurv(ia, i, :, :))
+
+                ! NACA thickness
+                call yz_param_ders (rb(i, ia), ya(i, ia), delta_theta(ia), dr_dthk(ia, i, :, :), &
+                                    dth_dthk(ia, i, :, :), dy_dthk(ia, i, :, :), dz_dthk(ia, i, :, :))
+
+            end if
 
             ! Positive half pitch leaned coordinates
             xposlean(i,ia)   = xb(i,ia) 
@@ -863,23 +875,28 @@ subroutine bladestack(nspn,X_le,X_te,R_le,R_te,nsec,scf,msle,np,stack,cpdeltam,s
 
 
     ! Write derivatives of all (x, y, z) spanwise sections
-    ! TODO: Add if-else conditions
+    ! Sweep and lean derivatives don't depend on the section definition
     call write_xyz_der_files (1, dx_dsweep, dy_dsweep, dz_dsweep)
     call write_xyz_der_files (2, dx_dlean, dy_dlean, dz_dlean)
-    call write_xyz_der_files (3, dx_dinbeta, dy_dinbeta, dz_dinbeta)
-    call write_xyz_der_files (4, dx_doutbeta, dy_doutbeta, dz_doutbeta)
-    call write_xyz_der_files (5, dx_dcm, dy_dcm, dz_dcm)
-    call write_xyz_der_files (6, dx_dcurv, dy_dcurv, dz_dcurv)
-    call write_xyz_der_files (7, dx_dthk, dy_dthk, dz_dthk)
+    if (analytic_ders) then
+        call write_xyz_der_files (3, dx_dinbeta, dy_dinbeta, dz_dinbeta)
+        call write_xyz_der_files (4, dx_doutbeta, dy_doutbeta, dz_doutbeta)
+        call write_xyz_der_files (5, dx_dcm, dy_dcm, dz_dcm)
+        call write_xyz_der_files (6, dx_dcurv, dy_dcurv, dz_dcurv)
+        call write_xyz_der_files (7, dx_dthk, dy_dthk, dz_dthk)
+    end if
 
-    ! Keep in-memory copies for the ESP UDP (see store_xyz_ders)
+    ! Keep in-memory copies for the ESP UDP (see store_xyz_ders);
+    ! groups that are not computed stay unallocated (getters return -1)
     call store_xyz_ders (1, dx_dsweep, dy_dsweep, dz_dsweep)
     call store_xyz_ders (2, dx_dlean, dy_dlean, dz_dlean)
-    call store_xyz_ders (3, dx_dinbeta, dy_dinbeta, dz_dinbeta)
-    call store_xyz_ders (4, dx_doutbeta, dy_doutbeta, dz_doutbeta)
-    call store_xyz_ders (5, dx_dcm, dy_dcm, dz_dcm)
-    call store_xyz_ders (6, dx_dcurv, dy_dcurv, dz_dcurv)
-    call store_xyz_ders (7, dx_dthk, dy_dthk, dz_dthk)
+    if (analytic_ders) then
+        call store_xyz_ders (3, dx_dinbeta, dy_dinbeta, dz_dinbeta)
+        call store_xyz_ders (4, dx_doutbeta, dy_doutbeta, dz_doutbeta)
+        call store_xyz_ders (5, dx_dcm, dy_dcm, dz_dcm)
+        call store_xyz_ders (6, dx_dcurv, dy_dcurv, dz_dcurv)
+        call store_xyz_ders (7, dx_dthk, dy_dthk, dz_dthk)
+    end if
 
 
 

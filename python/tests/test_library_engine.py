@@ -124,6 +124,20 @@ def test_executable_and_library_agree_on_other_case():
     assert np.array_equal(a.sections, b.sections)
 
 
+def test_wennerstrom_case_sweep_and_lean_derivatives(lib_engine):
+    """Wennerstrom thickness: no analytic section derivatives, so only groups 1 (sweep) and 2 (lean)."""
+    folder = paths.INPUTS_DIR / "OpenCSM" / "Wennerstrom_with_umxthk"
+    files = {n: (folder / n).read_text() for n in ("3dbgbinput.1.dat", "spancontrolinputs.1.dat")}
+    with ExecutableEngine() as exe:
+        ref = exe.run(files, "3dbgbinput.1.dat")
+    geo = lib_engine.run(files, "3dbgbinput.1.dat")
+    assert np.array_equal(geo.sections, ref.sections)
+    assert set(geo.derivatives.xyz) == set(ref.derivatives.xyz)
+    assert {key[0] for key in geo.derivatives.xyz} == {1, 2}
+    for key in ref.derivatives.xyz:           # files hold 16 decimals
+        assert np.abs(geo.derivatives.xyz[key] - ref.derivatives.xyz[key]).max() < 1e-12, key
+
+
 def test_timeout_kills_the_run(tct_files, lib_geometry):
     from tblade3.engine.library import LibraryEngine
 

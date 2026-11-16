@@ -2030,6 +2030,25 @@ module file_operations
 
 
     !
+    ! Forget the stored derivatives of a previous run (the shared library
+    ! keeps module data between runs); called at the start of each run
+    !
+    !---------------------------------------------------------------------------
+    subroutine clear_xyz_ders ()
+
+        integer                                 :: i
+
+        do i = 1, size(xyz_der_groups)
+            if (allocated(xyz_der_groups(i)%d)) deallocate(xyz_der_groups(i)%d)
+        end do
+
+    end subroutine clear_xyz_ders
+    !---------------------------------------------------------------------------
+
+
+
+
+    !
     ! C interface: sizes of a stored derivative group
     !
     ! Output: dims = [nspan, np, nparams, ncp], all zero if not available
