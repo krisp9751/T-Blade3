@@ -94,20 +94,31 @@ class _Library:
         self.lib.tb_get_xyz_ders.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                              np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS")]
         self.lib.tb_get_xyz_ders.restype = ctypes.c_int
+        try:                                    # absent in libraries built before the switch existed
+            self._set_write_der_files = self.lib.tb_set_write_der_files
+            self._set_write_der_files.argtypes = [ctypes.c_int]
+            self._set_write_der_files.restype = None
+        except AttributeError:
+            self._set_write_der_files = None
 
     def run(self, main: str, aux: str, args: tuple[str, ...]) -> None:
+        # The section derivatives are read from memory (xyz_derivatives), so T-Blade3 need not
+        # write them as formatted text: about 170 files for a typical blade, most of the run time.
+        if self._set_write_der_files is not None:
+            self._set_write_der_files(0)
         a = [s.encode() for s in (*args, "", "", "")[:3]]
         self.lib.tb_run(main.encode(), aux.encode(), *a)
 
-    def xyz_derivatives(self, run_dir: Path, nsec: int, npt: int) -> dict[tuple[int, int, int], np.ndarray]:
+    def xyz_derivatives(self, nsec: int, npt: int) -> dict[tuple[int, int, int], np.ndarray]:
         """Section derivatives straight from memory, keyed like the derivative file names.
 
-        Only entries that the run also wrote to derivative_files/ are returned, so the result is
-        the same set the executable engine reads from the files (at full precision).
+        The entries are those T-Blade3 writes to derivative_files/ (write_xyz_der_files), so the
+        result is the same set the executable engine reads from the files, at full precision. The
+        curvature group (6) holds the chordwise locations u2.. in its first fields; T-Blade3 does
+        not differentiate with respect to those and writes only the cur1.. fields.
         """
         out: dict[tuple[int, int, int], np.ndarray] = {}
         dims = (ctypes.c_int * 4)()
-        der_dir = run_dir / "derivative_files"
         buf = np.empty(3 * nsec * npt)
         for group in range(1, 8):
             if self.lib.tb_get_xyz_ders_size(group, dims) != 0:
@@ -115,10 +126,8 @@ class _Library:
             ns, np_, nparams, ncp = dims
             if (ns, np_) != (nsec, npt):
                 continue
-            for k in range(1, nparams + 1):
+            for k in range(nparams // 2 if group == 6 else 1, nparams + 1):
                 for l in range(1, ncp + 1):
-                    if not (der_dir / f"xyz_ders_{group}_{k}_{l}.dat").is_file():
-                        continue
                     if self.lib.tb_get_xyz_ders(group, k, l, buf) == 0:
                         out[(group, k, l)] = buf.reshape(nsec, npt, 3).copy()
         return out
@@ -150,7 +159,7 @@ def _run_in_child(lib: _Library, work_dir: Path, files: Mapping[str, str], main:
         raise TBlade3Error(f"T-Blade3 produced no usable geometry: {exc}", log_tail(work_dir)) from None
     if derivatives:
         geo.derivatives = outputs.read_derivatives(work_dir, geo.nsec, geo.npt, xyz=False)
-        geo.derivatives.xyz = lib.xyz_derivatives(work_dir, geo.nsec, geo.npt)
+        geo.derivatives.xyz = lib.xyz_derivatives(geo.nsec, geo.npt)
     return geo
 
 

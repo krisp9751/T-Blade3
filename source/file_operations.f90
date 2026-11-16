@@ -13,6 +13,15 @@ module file_operations
     end type xyz_der_group
     type(xyz_der_group), save :: xyz_der_groups(7)
 
+    !
+    ! .false. skips the large formatted files in derivative_files/ (xyz_ders_*
+    ! and duv_*); the derivatives are still computed and kept in memory for
+    ! tb_get_xyz_ders. Set through tb_set_write_der_files by callers that read
+    ! them from memory, for which writing the files is most of the run time.
+    ! The small stagger_ders_* and throat_ders_* files are always written.
+    !
+    logical, save :: write_der_files = .true.
+
 
 
     contains
@@ -1786,6 +1795,8 @@ module file_operations
         character(256)                              :: filename
 
 
+        if (.not. write_der_files) return
+
         ! Construct name of output file
         write(filename, '(A21,I0,A4,I0,A4)') &
              'derivative_files/duv_', js, '_dt_', iparam, '.dat'
@@ -1854,6 +1865,8 @@ module file_operations
         integer                                 :: i, k, funit = 236
 
 
+        if (.not. write_der_files) return
+
         ! Construct name of output file
         write (filename, '(A21,I0,A6,I0,A4)') &
             'derivative_files/duv_', js, '_dcur_', iparam, '.dat'
@@ -1913,6 +1926,8 @@ module file_operations
         integer                                 :: nspan, np, nparams, ncp, i, j, k, l, funit = 838
         character(256), allocatable             :: filename(:,:)
 
+
+        if (.not. write_der_files) return
 
         ! Array sizes
         nspan                           = size(dx, 1)
@@ -2043,6 +2058,24 @@ module file_operations
         end do
 
     end subroutine clear_xyz_ders
+    !---------------------------------------------------------------------------
+
+
+
+
+    !
+    ! C interface: switch the writing of derivative_files/xyz_ders_* and duv_*
+    ! on (flag /= 0, the default) or off (flag = 0); see write_der_files
+    !
+    !---------------------------------------------------------------------------
+    subroutine tb_set_write_der_files (flag) bind(C, name = 'tb_set_write_der_files')
+        use iso_c_binding,      only: c_int
+
+        integer(c_int), value,  intent(in)      :: flag
+
+        write_der_files = (flag /= 0)
+
+    end subroutine tb_set_write_der_files
     !---------------------------------------------------------------------------
 
 

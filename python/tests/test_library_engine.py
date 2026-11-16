@@ -47,6 +47,14 @@ def test_derivatives_from_memory_match_files(lib_geometry, tct_geometry):
         assert np.array_equal(mem.stagger[key], ref.stagger[key])
 
 
+def test_section_derivative_files_are_not_written(lib_engine, tct_files, lib_geometry):
+    """The engine reads the section derivatives from memory and tells T-Blade3 to skip those files."""
+    assert len(lib_geometry.derivatives.xyz) == 130
+    lib_engine.run(tct_files, TCT_MAIN)
+    names = [p.name for p in (lib_engine.work_dir / "derivative_files").iterdir()]
+    assert names and not [n for n in names if n.startswith(("xyz_ders", "duv_"))]
+
+
 def test_repeated_runs_are_identical(lib_engine, tct_files, lib_geometry):
     for _ in range(3):
         geo = lib_engine.run(tct_files, TCT_MAIN, derivatives=False)
