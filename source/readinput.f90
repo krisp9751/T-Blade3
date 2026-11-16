@@ -2797,7 +2797,7 @@ subroutine read_spanwise_NACA_input(row_type,path)
                 temp(ii)            = cp_chord_curv(ii,kk)
             end do
 #ifdef FROM_ESP
-            call override_cur6(ncp_span_curv,temp)
+            call override_cur7(ncp_span_curv,temp)
 #endif
             do ii = 1,ncp_span_curv
                 cp_chord_curv(ii,kk)= temp(ii)

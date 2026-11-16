@@ -48,7 +48,7 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
 
     ! Local variables
     integer                                     :: np_side, i, naca, np_cluster, ncp, i_le, i_te, oo, nopen, j_throat,          &
-                                                   iup_throat, idwn_throat
+                                                   iup_throat, idwn_throat, n_thk_ders, n_curv_ders
     integer,    parameter                       :: nspan = 200, nx = 500, nxx = 1000, nrow = 1, nax = 50, nb = 300,             &
                                                    spline_data = 6, interval = 6, pt2 = 1, TE_del = 0
     real                                        :: chrd, pitch, radius_pitch, scaling, lethk, thkmultip, aext, ainl, area, cam, &
@@ -214,47 +214,77 @@ subroutine bladegen(nspn,thkc,mr1,sinl,sext,chrdx,js,fext,xcen,ycen,airfoil, sta
     if (allocated(ymean         )) deallocate(ymean         )
     allocate(ueq(np_side),xmean(np_side),ymean(np_side))
 
+    ! Number of thickness parameters which carry derivatives
+    ! ncp_thk is only set by the modified NACA thickness input; the other
+    ! thickness distributions have no thickness derivatives, so the arrays
+    ! below are given the NACA size and left at zero
+    if (thick_distr == 5) then
+        n_thk_ders = ncp_thk(js) - 1
+    else
+        n_thk_ders = 4
+    end if
+
+    ! Number of chordwise mean-line control points which carry derivatives
+    ! ncp_curv is only set when the mean-line is defined by curvature
+    ! control; otherwise the arrays below are unused, so give them a
+    ! nominal size and leave them at zero
+    if (curv_camber == 1) then
+        n_curv_ders = ncp_curv(js) - 2
+    else
+        n_curv_ders = 7
+    end if
+
     ! Derivatives of u wrt parameters (ellipse-based clustering)
     if (allocated(u_ders        )) deallocate(u_ders        )
-    allocate(u_ders(np, ncp_thk(js) - 1))
+    allocate(u_ders(np, n_thk_ders))
+    u_ders = 0.0
 
     ! Derivatives of NACA thickness wrt parameters
     if (allocated(NACA_ders     )) deallocate(NACA_ders     )
-    allocate(NACA_ders(np, ncp_thk(js) - 1))
+    allocate(NACA_ders(np, n_thk_ders))
+    NACA_ders = 0.0
 
     ! Sensitivity of mean-line wrt chordwise control points
     if (allocated(dcam_dxcp)) deallocate(dcam_dxcp)
-    allocate(dcam_dxcp(np, ncp_curv(js) - 2))
+    allocate(dcam_dxcp(np, n_curv_ders))
+    dcam_dxcp = 0.0
     if (allocated(dcam_dycp)) deallocate(dcam_dycp)
-    allocate(dcam_dycp(np, ncp_curv(js) - 2))
+    allocate(dcam_dycp(np, n_curv_ders))
+    dcam_dycp = 0.0
 
     ! Sensitivity of mean-line 1st derivative wrt chordwise
     ! control points
     if (allocated(dslope_dxcp)) deallocate(dslope_dxcp)
-    allocate(dslope_dxcp(np, ncp_curv(js) - 2))
+    allocate(dslope_dxcp(np, n_curv_ders))
+    dslope_dxcp = 0.0
     if (allocated(dslope_dycp)) deallocate(dslope_dycp)
-    allocate(dslope_dycp(np, ncp_curv(js) - 2))
+    allocate(dslope_dycp(np, n_curv_ders))
+    dslope_dycp = 0.0
 
     ! Sensitivity of mean-line wrt u (ellipse-based clustering)
     ! and thickness parameters
     if (allocated(dcam_u)) deallocate(dcam_u)
     allocate(dcam_u(np))
     if (allocated(cam_ders)) deallocate(cam_ders)
-    allocate(cam_ders(np, ncp_thk(js) - 1))
+    allocate(cam_ders(np, n_thk_ders))
+    cam_ders = 0.0
 
     ! Sensitivity of mean-line 1st derivatives wrt u
     ! (ellipse based clustering) and thickness parameters
     if (allocated(dslope_u)) deallocate(dslope_u)
     allocate(dslope_u(np))
     if (allocated(slope_ders)) deallocate(slope_ders)
-    allocate(slope_ders(np, ncp_thk(js) - 1))
+    allocate(slope_ders(np, n_thk_ders))
+    slope_ders = 0.0
 
     ! Sensitivity of the stagger angle to the mean-line
     ! second derivative control points
     if (allocated(dsang_dcurv)) deallocate(dsang_dcurv)
-    allocate(dsang_dcurv((2 * (ncp_curv(js) - 2)) - 2))
+    allocate(dsang_dcurv((2 * n_curv_ders) - 2))
+    dsang_dcurv = 0.0
     if (allocated(dchrd_dcurv)) deallocate(dchrd_dcurv)
-    allocate(dchrd_dcurv((2 * (ncp_curv(js) - 2)) - 2))
+    allocate(dchrd_dcurv((2 * n_curv_ders) - 2))
+    dchrd_dcurv = 0.0
 
     ! Sensitivity of the stagger to the control points
     ! of span and in_beta* specified in 3dbgbinputs file

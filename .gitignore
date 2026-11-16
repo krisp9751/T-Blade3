@@ -6,3 +6,8 @@
 *.png
 *.mod
 *.bat
+bin/
+lib/
+__pycache__/
+*.egg-info/
+.pytest_cache/

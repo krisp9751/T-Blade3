@@ -27,6 +27,9 @@ endif
 OBJS =  globvar.o file_operations.o errors.o funcNsubs.o derivatives.o spline.o readinput.o 3dbgb.o 3dbgb_driver.o bladegen.o bladestack.o bspline3.o \
         cubicspline.o bsplinecam.o splinethick.o airfoiltypes.o spanwise_variation.o \
 
+# Shared library: everything except the main program, plus the C interface
+LIB_OBJS = $(filter-out 3dbgb_driver.o, $(OBJS)) capi.o
+
 # 'Make code' behavior
 ifeq ($(detected_OS),Windows)
     code: $(EXEC1) $(EXEC2)
@@ -50,7 +53,7 @@ else # Compilation for Linux/MacOS
 	$(FCOMP) -g globvar.o file_operations.o errors.o funcNsubs.o spline.o techop.o -o $(EXEC_DIR)/$(EXEC2)
   $(LIB_DIR):
 	$(MKDIR_P) $(LIB_DIR)
-  $(TARGET_LIB):$(OBJS)
+  $(TARGET_LIB):$(LIB_OBJS)
 	$(FCOMP)  $(LDFLAGS) $@ $^
 endif
 
@@ -63,7 +66,7 @@ clean:
     ifeq ($(detected_OS),Windows)
 		-rm -f $(EXEC1) $(EXEC2) techop.o $(OBJS) *.mod *.x *.exe
     else
-		-rm -f $(EXEC_DIR)/$(EXEC1) $(EXEC_DIR)/$(EXEC2) techop.o $(OBJS) *.mod *.x *.exe
+		-rm -f $(EXEC_DIR)/$(EXEC1) $(EXEC_DIR)/$(EXEC2) techop.o capi.o $(OBJS) *.mod *.x *.exe
 		-rm -r $(EXEC_DIR)
     endif
 
@@ -71,7 +74,7 @@ clean:
 clean_lib:
 
     ifneq ($(detected_OS),Windows)
-		-rm -f $(LIB_DIR)/$(TARGET_LIB)
+		-rm -f $(TARGET_LIB)
 		-rm -r $(LIB_DIR)
     endif
 
