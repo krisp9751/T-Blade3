@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QSpinBox, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel, QSpinBox, QSplitter, QVBoxLayout,
+                               QWidget)
 
 from ...surfaces import edge_points
 from ..controller import Controller
@@ -18,7 +19,7 @@ class FlowPathTab(RowTab):
     def __init__(self, controller: Controller, parent: QWidget | None = None):
         super().__init__(controller, parent)
 
-        # -- left: inputs ---------------------------------------------------------------------
+        # -- inputs ---------------------------------------------------------------------------
         self.le_te_table = ParamTable(controller, [("x LE", "le_te.x_le"), ("r LE", "le_te.r_le"),
                                                    ("x TE", "le_te.x_te"), ("r TE", "le_te.r_te")])
         le_te_box = QGroupBox("LE and TE curves")
@@ -46,14 +47,15 @@ class FlowPathTab(RowTab):
         stream_layout.addWidget(self.streamline_table)
         stream_layout.addWidget(self.streamline_note)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(le_te_box, 3)
-        left_layout.addWidget(offsets_box, 0)
-        left_layout.addWidget(stream_box, 3)
+        # A flow path is wider than tall, so the plot gets the full width and the inputs sit below it.
+        inputs = QWidget()
+        inputs_layout = QHBoxLayout(inputs)
+        inputs_layout.setContentsMargins(0, 0, 0, 0)
+        inputs_layout.addWidget(le_te_box, 4)
+        inputs_layout.addWidget(stream_box, 3)
+        inputs_layout.addWidget(offsets_box, 2, Qt.AlignTop)
 
-        # -- right: meridional plot -----------------------------------------------------------
+        # -- top: meridional plot -------------------------------------------------------------
         self.plot = Plot("x (non-dimensional)", "r (non-dimensional)", equal_aspect=True, legend=True)
         self.le_points = DragPoints(series_colour(0), line=True)
         self.te_points = DragPoints(series_colour(1), line=True)
@@ -63,12 +65,12 @@ class FlowPathTab(RowTab):
             points.signals.moved.connect(lambda i, x, y, prefix=prefix: self._point_dragged(prefix, i, x, y))
             points.signals.clicked.connect(self.le_te_table.select_row)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.plot)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 700])
+        splitter.addWidget(inputs)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([420, 300])
         layout = QVBoxLayout(self)
         layout.addWidget(splitter)
 
