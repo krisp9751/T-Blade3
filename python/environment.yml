@@ -1,0 +1,21 @@
+# Conda environment for the tblade3 Python package and GUI.
+#   mamba env create -f python/environment.yml
+#   conda activate tblade3
+#   pip install --no-deps -e python
+name: tblade3
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - numpy
+  - scipy
+  - pyyaml
+  - pytest
+  - pytest-qt
+  - pyside6
+  - pyvista
+  - pyvistaqt
+  - pyqtgraph
+  - gfortran
+  - make
+  - pip

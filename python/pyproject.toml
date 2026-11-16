@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tblade3"
+version = "0.1.0"
+description = "Python interface and GUI for the T-Blade3 turbomachinery blade geometry builder"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "pyyaml"]
+
+[project.optional-dependencies]
+gui = ["PySide6", "pyvista", "pyvistaqt", "pyqtgraph"]
+test = ["pytest", "pytest-qt"]
+
+[project.scripts]
+tb3 = "tblade3.cli:main"
+tb3-gui = "tblade3.gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["tblade3*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
