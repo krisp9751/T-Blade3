@@ -267,7 +267,6 @@ class ThicknessTab(RowTab):
         self.tm_table.refresh()
         thk = m.thickness
         has_umax = "u_max" in thk.values and len(thk) and np.all(np.asarray(thk.values["u_max"]) > 0)
-        self.section_table.set_read_only_columns({1} if has_umax else set())
         self.section_note.setText("umxthk is greyed out: the u_max control points of the tm/c table (Spanwise "
                                   "controls) set the location of maximum thickness." if has_umax else
                                   "lethk and tethk set the LE and TE thickness, umxthk the location of the maximum.")

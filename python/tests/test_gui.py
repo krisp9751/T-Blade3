@@ -25,6 +25,13 @@ CASE7 = paths.INPUTS_DIR / "OpenCSM" / "Case7-28-8"
 BUILD = 30000                                          # ms, generous: one build takes about a second
 
 
+@pytest.fixture(autouse=True)
+def _no_discard_question(monkeypatch):
+    """A test that fails with unsaved edits must not hang on the modal 'discard changes?' question at teardown."""
+    from tblade3.gui.main_window import MainWindow
+    monkeypatch.setattr(MainWindow, "_confirm_discard", lambda self: True)
+
+
 @pytest.fixture
 def case_dir(tmp_path):
     try:
@@ -375,8 +382,12 @@ def test_row_setup_tab(qtbot, case_dir):
         box.setCurrentIndex(box.findData(0))
     assert "elliptical" in blocker.args[0].lower() and row.main.thickness_distribution == 5
     assert box.currentData() == 5 and c.undo_stack.count() == count
-    tab.boxes["variable_stacking"].setCurrentIndex(1)                      # refused: T-Blade3 crashes
-    assert row.main.variable_stacking == 0 and tab.boxes["variable_stacking"].currentData() == 0
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):                 # variable stacking starts from the axis
+        tab.boxes["variable_stacking"].setCurrentIndex(1)
+    assert row.main.variable_stacking == 1 and np.all(row.main.stk_u == 55.0) and np.all(row.main.stk_v == 0.0)
+    assert np.array_equal(row.geometry.sections, built)
+    c.undo_stack.undo()
+    assert row.main.variable_stacking == 0 and np.all(row.main.stk_u == 25.0)
     _settled(qtbot, c, "2")
     assert np.array_equal(row.geometry.sections, built)
     c.undo_stack.setClean()
@@ -421,7 +432,8 @@ def test_sections_tab(qtbot, case_dir):
     assert tab.table.table.item(0, 0).text() == "-57.82648041"
     assert tab.points._pos.shape == (21, 2) and tab.points._pos[0, 0] == row.main.sections["in_beta"][0]
     assert "built" in tab.plot.names() and tab.built_plot.isHidden()
-    assert not tab.table.table.item(0, 3).flags() & Qt.ItemIsEditable       # chord unused: chord switch 2
+    assert "chord" in tab.table.table.item(0, 3).toolTip() and tab.table.table.item(0, 0).toolTip() == ""
+    assert "chord" in tab.note.text() and "mrel_in" in tab.note.text()      # unused with chord switch 2
     built = row.geometry.sections.copy()
 
     c.begin_drag()
@@ -495,7 +507,8 @@ def test_thickness_tab_wennerstrom(qtbot, tmp_path):
     qtbot.wait(50)
     assert tab.pages.currentIndex() == 1 and tab.section_table.table.rowCount() == 21
     assert tab.tm_table.isEnabled() and tab.tm_table.table.rowCount() == 5
-    assert not tab.section_table.table.item(0, 1).flags() & Qt.ItemIsEditable    # umxthk: u_max spline instead
+    assert "u_max" in tab.section_table.table.item(0, 1).toolTip()               # umxthk: u_max spline instead
+    assert tab.section_table.table.item(0, 2).toolTip() == ""
     assert len(row.geometry.thickness) == 21
     assert row.geometry.thickness[0][:, 1].max() == pytest.approx(row.main.sections["tc_max"][0], rel=0.02)
     thickness = [t.copy() for t in row.geometry.thickness]
@@ -523,7 +536,7 @@ def test_stacking_tab(qtbot, case_dir):
     qtbot.wait(50)
     assert tab.variable_box.currentData() == 0 and tab.table.rowCount() == 21
     assert tab.table.cellWidget(0, 0).currentData() == "sect1"
-    assert not tab.table.item(0, 1).flags() & Qt.ItemIsEditable                 # stk_u unused
+    assert "variable" in tab.table.item(0, 1).toolTip()                         # stk_u unused
     assert (tab.axis_edit.u_spin.value(), tab.axis_edit.v_spin.value()) == (55, 0)       # 055000
     assert tab.points["stk_u"]._pos.shape == (21, 2) and tab.blend_table.rowCount() == len(row.main.blending)
     built = row.geometry.sections.copy()
@@ -546,7 +559,17 @@ def test_stacking_tab(qtbot, case_dir):
     assert row.main.airfoil_type[3] == "0012" and tab.table.cellWidget(3, 0).currentText() == "0012"
     c.undo_stack.undo()
     assert row.main.airfoil_type[3] == "sect1"
-    tab.variable_box.setCurrentIndex(1)                                         # refused
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):                      # variable stacking, same blade
+        tab.variable_box.setCurrentIndex(1)
+    assert row.main.variable_stacking == 1 and tab.table.item(0, 1).toolTip() == ""
+    assert tab.table.item(5, 1).text() == "55" and np.array_equal(row.geometry.sections, built)
+    c.begin_drag()
+    tab._point_dragged("stk_u", 5, 65.0)                                        # moves section 6 only
+    _settled(qtbot, c, "2")
+    moved = np.abs(row.geometry.sections - built).max(axis=(1, 2))
+    assert moved[5] > 0.1 and moved[4] == 0.0 and moved[6] == 0.0
+    c.undo_stack.undo()
+    c.undo_stack.undo()
     assert row.main.variable_stacking == 0
     _settled(qtbot, c, "2")
     assert np.array_equal(row.geometry.sections, built)

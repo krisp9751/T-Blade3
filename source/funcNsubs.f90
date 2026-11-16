@@ -701,8 +701,8 @@ module funcNsubs
 
         ! Variable radial stacking
         else if (stack_switch == 1) then 
-            stku = stk_u(js)
-            stkv = stk_v(js) 
+            stku = stk_u(1)     ! bladegen passes the value of this section, not the array
+            stkv = stk_v(1)
         end if
 
         ! Print stacking position information to the screen and write to log file

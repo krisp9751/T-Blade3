@@ -106,11 +106,11 @@ class SectionsTab(RowTab):
 
     def refresh_inputs(self) -> None:
         row = self.row
-        chord_unused = row is not None and row.main.chord_switch != 1
-        self.table.set_read_only_columns({3} if chord_unused else set())
         self.table.refresh()
-        self.note.setText("The chord column is used only with the chord switch at 1 (Row setup); it is greyed out."
-                          if chord_unused else "")
+        unused = sorted({name.split("[")[0].removeprefix("sec.") for name in row.unused_parameters()
+                         if name.startswith("sec.")}) if row is not None else []
+        self.note.setText(f"Greyed columns ({', '.join(unused)}) are not used with the current switches; "
+                          "hover over a cell for the reason." if unused else "")
         self._draw()
 
     def refresh_geometry(self) -> None:

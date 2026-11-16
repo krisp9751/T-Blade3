@@ -22,7 +22,7 @@ from ...io.spancontrol import (ControlInputs, SpanControl, Table, NACA_COLUMNS, 
 from ...model import BladeRow
 from ..controller import Controller
 from ..edits import set_inputs
-from ..widgets import ChoiceBox, StackingAxisEdit, ValueEdit
+from ..widgets import ChoiceBox, StackingAxisEdit, ValueEdit, decode_stacking_axis
 from .base import RowTab
 
 ANGLE_SWITCHES = {0: "Axial angles (beta_z)", 1: "Radial angles (beta_r)", 2: "Axial inlet, radial exit",
@@ -135,9 +135,6 @@ def change_switch(controller: Controller, row_id: str, attr: str, value) -> str 
     # -- combinations T-Blade3 rejects ---------------------------------------------------------
     if attr == "le_spline" and value:
         return refuse("the LE spline is not available in current T-Blade3 (readinput.f90 stops); it stays 0.")
-    if attr == "variable_stacking" and value:
-        return refuse("variable stacking makes current T-Blade3 crash (stacking() in funcNsubs.f90 indexes "
-                      "stk_u(js) of a single value passed from 3dbgb.f90); the row keeps one stacking axis.")
     if attr in ("clustering_switch", "thickness_distribution") and s["clustering_switch"] == 4 \
             and s["thickness_distribution"] != 5:
         return refuse("elliptical clustering works only with the modified NACA thickness (bladegen.f90). "
@@ -192,6 +189,11 @@ def change_switch(controller: Controller, row_id: str, attr: str, value) -> str 
             if len(getattr(m, table)) < 2:
                 new[table] = _default_control(row, table, s["angle_spline"])
                 notes.append(f"added four {table}* control points")
+    if attr == "variable_stacking" and value:       # start from the stacking axis: the blade stays as it is
+        u, v = decode_stacking_axis(m.stacking_axis)
+        if not (np.all(m.stk_u == u) and np.all(m.stk_v == v)):
+            new["stk_u"], new["stk_v"] = np.full(len(m.stk_u), float(u)), np.full(len(m.stk_v), float(v))
+            notes.append(f"set stk_u = {u} and stk_v = {v} at every section, from the stacking axis")
     if attr == "chord_switch" and value == 2 and len(m.chord_multiplier) < 2:
         new["chord_multiplier"] = ControlTable(np.linspace(0.0, 1.0, 4), {"chord_multiplier": np.zeros(4)})
         notes.append("added four chord multiplier control points of 0 (no change of chord)")
@@ -380,9 +382,9 @@ class RowSetupTab(RowTab):
                  1: "Uses the chord column of the Sections tab.",
                  2: "Uses the chord multiplier control points (Spanwise controls)."}
         n["chord_switch"].setText(chord.get(m.chord_switch, ""))
-        n["variable_stacking"].setText("Current T-Blade3 crashes with variable stacking, so it cannot be switched on "
-                                       "here." if not m.variable_stacking else
-                                       "On: current T-Blade3 crashes with variable stacking; switch it off.")
+        n["variable_stacking"].setText("On: stk_u and stk_v of each section (Stacking tab) replace the stacking axis."
+                                       if m.variable_stacking else
+                                       "Off: all sections are stacked on the stacking axis.")
         n["clustering_switch"].setText("Elliptical works only with the modified NACA thickness.")
         self.aux_note.setText(aux_requirement(row))
 

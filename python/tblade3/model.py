@@ -316,6 +316,10 @@ class BladeRow:
             curvature = set(map(_safe, self.aux.curvature.columns[1:])) | {"curvature.span"}
             if prefix in curvature and m.curvature_control == 0:
                 return "used only when the camber line is defined by curvature control"
+        u_max = m.thickness.values.get("u_max")
+        if (prefix == "umxthk" and m.thickness_distribution in (0, 1, 2) and u_max is not None and len(u_max)
+                and np.all(np.asarray(u_max) > 0)):
+            return "replaced by the u_max control points of the tm/c table (Spanwise controls)"
         if m.thickness_distribution == 5 and prefix in ("sec.tc_max", "umxthk", "lethk", "tethk", "tm_c", "u_max",
                                                         "thickness.span"):
             return "not used by the modified NACA thickness, which takes its values from the spancontrolinputs file"

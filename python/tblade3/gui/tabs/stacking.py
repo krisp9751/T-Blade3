@@ -3,8 +3,8 @@
 How T-Blade3 uses these (source/funcNsubs.f90, stacking()): with variable stacking off every
 section is stacked on the one stacking axis, a number whose thousands are the chordwise position
 in % of chord (200 = area centroid) and whose remainder is the position above or below the
-meanline in % of the thickness. With variable stacking on, stk_u and stk_v of each section would
-be used instead. The per-section umxthk, lethk and tethk are thickness inputs (Thickness tab).
+meanline in % of the thickness. With variable stacking on, stk_u and stk_v of each section are
+used instead. The per-section umxthk, lethk and tethk are thickness inputs (Thickness tab).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFormLayout, QGroup
 
 from ..controller import Controller
 from ..plots import DragPoints, Plot, series_colour
-from ..widgets import ChoiceBox, StackingAxisEdit, format_number
+from ..widgets import ChoiceBox, StackingAxisEdit, format_number, mark_unused
 from .base import RowTab
 from .rowsetup import CHOICES, change_switch
 from .sections import section_span
@@ -133,10 +133,8 @@ class StackingTab(RowTab):
         variable = bool(m.variable_stacking)
         self.axis_edit.setEnabled(not variable)
         self.variable_note.setText(
-            "On: stk_u and stk_v of each section are used, but current T-Blade3 crashes with variable stacking "
-            "(stacking() in funcNsubs.f90); switch it off." if variable else
-            "Off: all sections are stacked on the stacking axis below. Variable stacking cannot be switched on here: "
-            "current T-Blade3 crashes with it.")
+            "On: stk_u and stk_v of each section are used instead of the stacking axis." if variable else
+            "Off: all sections are stacked on the stacking axis below.")
         self._fill_table(variable)
         self._fill_blending()
         self._draw()
@@ -181,8 +179,7 @@ class StackingTab(RowTab):
                         self.table.setItem(j, col, item)
                     elif item.text() != text:
                         item.setText(text)
-                    item.setFlags(item.flags() | Qt.ItemIsEditable if variable else item.flags() & ~Qt.ItemIsEditable)
-                    item.setForeground(self.palette().text() if variable else self.palette().placeholderText())
+                    mark_unused(item, self.row.unused_reason(f"{name}[{j + 1}]"))    # greyed, still editable
         finally:
             self._filling = False
         others = sorted({t for t in m.airfoil_type if t != "sect1"})
@@ -270,7 +267,7 @@ class StackingTab(RowTab):
             points.set_points(getattr(m, name), span)
         self.plot.set_labels(y_label="Span fraction" if from_run else "Span fraction (evenly spaced)")
         self.plot_note.setText("Drag the points to change the values." if m.variable_stacking else
-                               "Not used with variable stacking off; shown for reference.")
+                               "Not used with variable stacking off.")
 
     def _point_dragged(self, name: str, index: int, x: float) -> None:
         row = self.row
