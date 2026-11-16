@@ -14,6 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
+from PySide6.QtCore import Qt                          # noqa: E402
+
 from tblade3 import paths                              # noqa: E402
 from tblade3.gui.controller import Controller          # noqa: E402
 
@@ -313,5 +315,269 @@ def test_spanwise_tab(qtbot, case_dir):
     assert "built" not in tab.plot.names()
     tab.control_list.setCurrentRow(6)                                                 # u_max: not in this case's file
     assert not tab.table.isEnabled() and tab.points._pos.shape == (0, 2)
+    c.undo_stack.setClean()
+    window.close()
+
+
+WENNERSTROM = paths.INPUTS_DIR / "OpenCSM" / "Wennerstrom_with_umxthk"
+
+
+def _wennerstrom(tmp_path, aux=True):
+    folder = tmp_path / "wennerstrom"
+    folder.mkdir()
+    for path in WENNERSTROM.glob("*input*.dat"):
+        if aux or not path.name.startswith("spancontrol"):
+            shutil.copy(path, folder / path.name)
+    return folder
+
+
+def _settled(qtbot, c, rid):
+    qtbot.waitUntil(lambda: c.row(rid).is_current and not c.is_building(rid), timeout=BUILD)
+
+
+def test_row_setup_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Row setup")
+    qtbot.wait(50)
+    assert tab.casename_edit.text() == "Case7-28-8" and tab.blades_edit.text() == "16"
+    assert tab.boxes["thickness_distribution"].currentData() == 5 and tab.boxes["clustering_switch"].currentData() == 4
+    assert not tab.boxes["le_spline"].isEnabled() and "spancontrolinputs.2.dat" in tab.aux_note.text()
+    pitch = row.geometry.section_table["pitch"].copy()
+
+    tab.blades_edit.setText("18")                                          # blade count
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab.blades_edit.editingFinished.emit()
+    assert row.main.n_blades == 18 and not np.allclose(row.geometry.section_table["pitch"], pitch)
+    c.undo_stack.undo()
+    assert row.main.n_blades == 16 and tab.blades_edit.text() == "16"
+    _settled(qtbot, c, "2")
+    built = row.geometry.sections.copy()
+
+    box = tab.boxes["clustering_switch"]                                   # a switch that rebuilds
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        box.setCurrentIndex(box.findData(3))
+    assert row.main.clustering_switch == 3 and c.error("2") == ""
+    assert np.abs(row.geometry.sections - built).max() > 1e-3
+    count = c.undo_stack.count()
+
+    box = tab.boxes["thickness_distribution"]                              # with hyperbolic clustering the
+    box.setCurrentIndex(box.findData(0))                                   # Wennerstrom thickness is accepted
+    assert row.main.thickness_distribution == 0 and c.undo_stack.count() == count + 1
+    assert row.aux.thickness is None and "naca.t_max[1]" not in row.parameters      # NACA block now not read
+    c.undo_stack.undo()
+    assert row.aux.naca and "naca.t_max[1]" in row.parameters
+    c.undo_stack.undo()                                                    # back to elliptical clustering
+    assert row.main.clustering_switch == 4
+    count = c.undo_stack.count()
+    with qtbot.waitSignal(c.message) as blocker:                           # but not with elliptical clustering
+        box.setCurrentIndex(box.findData(0))
+    assert "elliptical" in blocker.args[0].lower() and row.main.thickness_distribution == 5
+    assert box.currentData() == 5 and c.undo_stack.count() == count
+    tab.boxes["variable_stacking"].setCurrentIndex(1)                      # refused: T-Blade3 crashes
+    assert row.main.variable_stacking == 0 and tab.boxes["variable_stacking"].currentData() == 0
+    _settled(qtbot, c, "2")
+    assert np.array_equal(row.geometry.sections, built)
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_row_setup_default_data(qtbot, tmp_path):
+    """A switch that needs data the case lacks: the data is created in the same undoable edit."""
+    try:
+        paths.library()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    window = _window(qtbot, _wennerstrom(tmp_path, aux=False))
+    c = window.controller
+    row = c.row("1")
+    tab = _tab(window, "Row setup")
+    qtbot.wait(50)
+    assert row.aux is None and "no auxiliary file" in tab.aux_note.text()
+    built = row.geometry.sections.copy()
+    box = tab.boxes["thickness_distribution"]
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        box.setCurrentIndex(box.findData(5))
+    assert row.main.thickness_distribution == 5 and row.main.spanwise_spline and row.aux.naca
+    assert c.error("1") == "" and "naca.t_max[2]" in row.parameters
+    assert row.get("naca.t_max[1]") == pytest.approx(row.main.sections["tc_max"][0])
+    assert np.abs(row.geometry.sections - built).max() > 1e-3
+    c.undo_stack.undo()
+    assert row.aux is None and row.main.thickness_distribution == 0 and not row.main.spanwise_spline
+    _settled(qtbot, c, "1")
+    assert np.array_equal(row.geometry.sections, built)
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_sections_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Sections")
+    qtbot.wait(50)
+    assert tab.table.table.rowCount() == 21 and tab.table.table.columnCount() == 8
+    assert tab.table.table.item(0, 0).text() == "-57.82648041"
+    assert tab.points._pos.shape == (21, 2) and tab.points._pos[0, 0] == row.main.sections["in_beta"][0]
+    assert "built" in tab.plot.names() and tab.built_plot.isHidden()
+    assert not tab.table.table.item(0, 3).flags() & Qt.ItemIsEditable       # chord unused: chord switch 2
+    built = row.geometry.sections.copy()
+
+    c.begin_drag()
+    tab._point_dragged(5, -45.0, 0.3)
+    tab._point_dragged(5, -44.0, 0.9)                                       # the span is not changed
+    assert row.get("sec.in_beta[6]") == -44.0 and c.undo_stack.count() == 1
+    _settled(qtbot, c, "2")
+    assert np.abs(row.geometry.sections - built).max() > 0.01
+    c.undo_stack.undo()
+    assert row.get("sec.in_beta[6]") == pytest.approx(-50.0582314)
+    _settled(qtbot, c, "2")
+    assert np.array_equal(row.geometry.sections, built)
+
+    tab.column_list.setCurrentIndex(3)                                      # chord: result on its own plot
+    assert not tab.built_plot.isHidden() and "built" not in tab.plot.names()
+    tab.column_list.setCurrentIndex(4)                                      # t/c_max: as built from geom_data
+    assert "built" in tab.plot.names()
+    tab.column_list.setCurrentIndex(2)                                      # mrel_in: no result
+    assert "built" not in tab.plot.names() and tab.built_plot.isHidden()
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_thickness_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Thickness")
+    qtbot.wait(50)
+    assert tab.pages.currentIndex() == 0 and tab.naca_table.table.rowCount() == 5
+    assert [tab.naca_list.itemText(i) for i in range(tab.naca_list.count())] == ["LE_radius", "u_max", "t_max",
+                                                                                    "t_TE"]
+    assert tab.naca_param == "t_max" and tab.points._pos[0, 0] == pytest.approx(0.12546)
+    assert {"thk 0", "thk 10", "thk 20"} <= set(tab.result_plot.names())
+    thickness = row.geometry.thickness[2].copy()
+
+    c.begin_drag()
+    tab._point_dragged(2, 0.06, 0.5)                                        # t_max at mid span
+    assert row.get("naca.t_max[3]") == 0.06
+    _settled(qtbot, c, "2")
+    assert np.abs(row.geometry.thickness[10][:, 1] - thickness[:, 1]).max() > 1e-3 or \
+        np.abs(row.geometry.thickness[2][:, 1] - thickness[:, 1]).max() > 1e-4
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab._add_naca(1)                                                    # between points 2 and 3
+    assert row.aux.thickness.data.shape == (6, 5) and row.get("naca.span[3]") == pytest.approx(0.375)
+    assert tab.naca_table.table.rowCount() == 6 and c.error("2") == ""
+    tab._remove_naca(2)
+    assert row.aux.thickness.data.shape == (5, 5)
+    c.undo_stack.undo()
+    c.undo_stack.undo()
+    assert row.aux.thickness.data.shape == (5, 5) and row.get("naca.t_max[3]") == 0.06
+    c.undo_stack.undo()
+    assert row.get("naca.t_max[3]") == pytest.approx(0.04794)
+    _settled(qtbot, c, "2")
+    np.testing.assert_array_equal(row.geometry.thickness[2], thickness)
+    tab.result_choice.setCurrentIndex(tab.result_choice.findData("all"))
+    assert sum(n.startswith("thk ") for n in tab.result_plot.names()) == 21
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_thickness_tab_wennerstrom(qtbot, tmp_path):
+    try:
+        paths.library()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    window = _window(qtbot, _wennerstrom(tmp_path))
+    c = window.controller
+    row = c.row("1")
+    tab = _tab(window, "Thickness")
+    qtbot.wait(50)
+    assert tab.pages.currentIndex() == 1 and tab.section_table.table.rowCount() == 21
+    assert tab.tm_table.isEnabled() and tab.tm_table.table.rowCount() == 5
+    assert not tab.section_table.table.item(0, 1).flags() & Qt.ItemIsEditable    # umxthk: u_max spline instead
+    assert len(row.geometry.thickness) == 21
+    assert row.geometry.thickness[0][:, 1].max() == pytest.approx(row.main.sections["tc_max"][0], rel=0.02)
+    thickness = [t.copy() for t in row.geometry.thickness]
+
+    tab.section_list.setCurrentIndex(2)                                          # lethk
+    assert tab.points._pos[4, 0] == row.main.lethk[4]
+    c.begin_drag()
+    tab._point_dragged(4, 0.04, 0.2)
+    assert row.get("lethk[5]") == 0.04
+    _settled(qtbot, c, "1")
+    assert np.abs(row.geometry.thickness[4][:, 1] - thickness[4][:, 1]).max() > 1e-4
+    c.undo_stack.undo()
+    _settled(qtbot, c, "1")
+    np.testing.assert_array_equal(row.geometry.thickness[4], thickness[4])
+    assert {"thk 0", "thk 10", "thk 20"} <= set(tab.result_plot.names())
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_stacking_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Stacking")
+    qtbot.wait(50)
+    assert tab.variable_box.currentData() == 0 and tab.table.rowCount() == 21
+    assert tab.table.cellWidget(0, 0).currentData() == "sect1"
+    assert not tab.table.item(0, 1).flags() & Qt.ItemIsEditable                 # stk_u unused
+    assert (tab.axis_edit.u_spin.value(), tab.axis_edit.v_spin.value()) == (55, 0)       # 055000
+    assert tab.points["stk_u"]._pos.shape == (21, 2) and tab.blend_table.rowCount() == len(row.main.blending)
+    built = row.geometry.sections.copy()
+
+    tab.axis_edit.u_spin.setValue(30)
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        tab.axis_edit._commit()
+    assert row.main.stacking_axis == 30000 and np.abs(row.geometry.sections - built).max() > 0.1
+    tab.axis_edit.centroid.setChecked(True)
+    assert row.main.stacking_axis == 200000
+    c.undo_stack.undo()
+    c.undo_stack.undo()
+    assert row.main.stacking_axis == 55000 and tab.axis_edit.u_spin.value() == 55
+
+    box = tab.table.cellWidget(3, 0)                                            # an unknown type is refused
+    box.setEditText("naca4")
+    tab._type_changed(3)
+    assert row.main.airfoil_type[3] == "sect1" and box.currentData() == "sect1"
+    tab.set_airfoil_type(3, "0012")
+    assert row.main.airfoil_type[3] == "0012" and tab.table.cellWidget(3, 0).currentText() == "0012"
+    c.undo_stack.undo()
+    assert row.main.airfoil_type[3] == "sect1"
+    tab.variable_box.setCurrentIndex(1)                                         # refused
+    assert row.main.variable_stacking == 0
+    _settled(qtbot, c, "2")
+    assert np.array_equal(row.geometry.sections, built)
+    c.undo_stack.setClean()
+    window.close()
+
+
+def test_airfoils_tab(qtbot, case_dir):
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    row = c.row("2")
+    tab = _tab(window, "Airfoils")
+    qtbot.wait(50)
+    assert tab.section_list.count() == 21 and tab.checked() == [0, 10, 20]
+    assert {"sec 0", "sec 10", "sec 20", "mean 0"} <= set(tab.plot.names())
+    assert tab.table.rowCount() == 21
+    headers = [tab.table.horizontalHeaderItem(j).text() for j in range(tab.table.columnCount())]
+    assert "Chord (mm)" in headers and "Throat (mm)" in headers
+    tab.table.selectRow(5)
+    assert tab.highlight == 5 and "sec highlight" in tab.plot.names()
+    tab.check("all")
+    assert sum(n.startswith("sec ") and n != "sec highlight" for n in tab.plot.names()) == 21
+    tab.meanline_box.setChecked(False)
+    assert not any(n.startswith("mean ") for n in tab.plot.names())
+
+    curve = tab.plot._items["sec 10"].getData()[1].copy()                       # follows a rebuild
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD):
+        c.set_value("2", "naca.t_max[3]", 0.06)
+    assert not np.allclose(tab.plot._items["sec 10"].getData()[1], curve)
+    c.undo_stack.undo()
+    _settled(qtbot, c, "2")
+    np.testing.assert_array_equal(tab.plot._items["sec 10"].getData()[1], curve)
     c.undo_stack.setClean()
     window.close()

@@ -4,9 +4,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLineEdit,
-                               QPushButton, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from .controller import Controller
 
@@ -34,6 +34,7 @@ class ParamTable(QWidget):
         self.columns = columns
         self.row_id: str | None = None
         self._filling = False
+        self._read_only: set[int] = set()
         self.table = QTableWidget(0, len(columns), self)
         self.table.setHorizontalHeaderLabels([header for header, _ in columns])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -67,6 +68,12 @@ class ParamTable(QWidget):
         self.row_id = row_id
         self.refresh()
 
+    def set_read_only_columns(self, columns: set[int]) -> None:
+        """Show these columns greyed and not editable (e.g. values a switch makes unused)."""
+        if set(columns) != self._read_only:
+            self._read_only = set(columns)
+            self.refresh()
+
     def _count(self, params: dict) -> int:
         n = 0
         while self.columns and f"{self.columns[0][1]}[{n + 1}]" in params:
@@ -95,7 +102,10 @@ class ParamTable(QWidget):
                         self.table.setItem(i, j, item)
                     elif item.text() != text:
                         item.setText(text)
-                    item.setFlags(item.flags() | Qt.ItemIsEditable if p is not None else item.flags() & ~Qt.ItemIsEditable)
+                    editable = p is not None and j not in self._read_only
+                    item.setFlags(item.flags() | Qt.ItemIsEditable if editable else item.flags() & ~Qt.ItemIsEditable)
+                    item.setForeground(self.palette().placeholderText() if j in self._read_only else
+                                       self.palette().text())
         finally:
             self._filling = False
 
@@ -150,14 +160,19 @@ class ChoiceBox(QComboBox):
     """A combo box for an attribute with a fixed set of values, e.g. a switch of the main input.
 
     ``choices`` maps stored value -> label. ``target`` returns the object holding the attribute for
-    a blade row (default: the row's main input).
+    a blade row (default: the row's main input). ``commit(row_id, value)`` (optional) makes the
+    change instead of a plain ``set_attribute``, e.g. to add data the new value needs or to refuse
+    it; the box then shows whatever the model holds afterwards. ``locked`` keeps the box disabled.
     """
 
     def __init__(self, controller: Controller, attr: str, choices: dict, text: str,
-                 target: Callable | None = None, parent: QWidget | None = None):
+                 target: Callable | None = None, commit: Callable[[str, object], None] | None = None,
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.controller, self.attr, self.text = controller, attr, text
         self.target = target or (lambda row: row.main)
+        self.commit = commit
+        self.locked = False
         self.row_id: str | None = None
         self._filling = False
         for value, label in choices.items():
@@ -175,7 +190,7 @@ class ChoiceBox(QComboBox):
             if case is None or self.row_id not in case.rows:
                 self.setEnabled(False)
                 return
-            self.setEnabled(True)
+            self.setEnabled(not self.locked)
             value = getattr(self.target(case.rows[self.row_id]), self.attr)
             index = self.findData(value)
             if index < 0:                   # a value outside the known set: show it as it is
@@ -188,8 +203,92 @@ class ChoiceBox(QComboBox):
     def _commit(self) -> None:
         if self._filling or self.row_id is None:
             return
+        if self.commit is not None:
+            self.commit(self.row_id, self.currentData())
+            self.refresh()                  # shows the old value again if the change was refused
+            return
         obj = self.target(self.controller.case.rows[self.row_id])
         self.controller.set_attribute(self.row_id, obj, self.attr, self.currentData(), self.text)
+
+
+def decode_stacking_axis(stack: int) -> tuple[int, int]:
+    """Stacking axis number -> (% of chord, % above the meanline), as stacking() in funcNsubs.f90 decodes it.
+
+    The thousands are the chordwise position (200 = area centroid), the remainder the position above
+    (+) or below (-) the meanline; a negative number makes the remainder negative.
+    """
+    u = abs(int(stack)) // 1000
+    return u, (int(stack) - u * 1000) if stack >= 0 else (int(stack) + u * 1000)
+
+
+def encode_stacking_axis(u: int, v: int) -> int:
+    return u * 1000 + v if v >= 0 else -(u * 1000 - v)
+
+
+class StackingAxisEdit(QWidget):
+    """The stacking axis of a row (main input ``stacking_axis``) as chord and meanline positions."""
+
+    def __init__(self, controller: Controller, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.controller = controller
+        self.row_id: str | None = None
+        self._filling = False
+        self.u_spin = QSpinBox()
+        self.u_spin.setRange(0, 100)
+        self.u_spin.setSuffix(" % of chord")
+        self.v_spin = QSpinBox()
+        self.v_spin.setRange(-100, 100)
+        self.v_spin.setSuffix(" % above meanline")
+        self.centroid = QCheckBox("Area centroid")
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        for w in (self.u_spin, self.v_spin):
+            w.editingFinished.connect(self._commit)
+        self.centroid.toggled.connect(self._commit)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.u_spin)
+        row.addWidget(self.v_spin)
+        row.addWidget(self.centroid)
+        row.addStretch(1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(row)
+        layout.addWidget(self.note)
+
+    def set_row(self, row_id: str | None) -> None:
+        self.row_id = row_id
+        self.refresh()
+
+    def refresh(self) -> None:
+        case = self.controller.case
+        row = case.rows.get(self.row_id) if case is not None else None
+        self._filling = True
+        try:
+            self.setEnabled(row is not None)
+            if row is None:
+                return
+            stack = row.main.stacking_axis
+            u, v = decode_stacking_axis(stack)
+            self.centroid.setChecked(u == 200)
+            self.u_spin.setEnabled(u != 200)
+            self.u_spin.setValue(min(u, 100))
+            self.v_spin.setValue(max(-100, min(v, 100)))
+            where = "the area centroid" if u == 200 else f"{u} % of the chord"
+            self.note.setText(f"Stored as {stack:06d}: thousands = % of chord (200 = area centroid), the rest = % of "
+                              f"the thickness above (+) or below (−) the meanline. Now: {where}, {v} % above the "
+                              "meanline.")
+        finally:
+            self._filling = False
+
+    def _commit(self, *_args) -> None:
+        if self._filling or self.row_id is None:
+            return
+        u = 200 if self.centroid.isChecked() else self.u_spin.value()
+        value = encode_stacking_axis(u, self.v_spin.value())
+        main = self.controller.case.rows[self.row_id].main
+        self.controller.set_attribute(self.row_id, main, "stacking_axis", value, "Change the stacking axis")
+        self.refresh()
 
 
 class ParameterTree(QWidget):

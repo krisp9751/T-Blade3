@@ -10,6 +10,8 @@ File names written by T-Blade3 (``<cn>`` = casename, ``<r>`` = blade row, ``<i>`
 - ``geom_data.<cn>.csv``           csv table (only for some thickness/clustering options)
 - ``hub.<cn>.sldcrv``, ``casing.<cn>.sldcrv``   (x, y, z) curves
 - ``LE_TE_intersection.<cn>.dat``  per section: x_le, r_le, x_te, r_te (non-dimensional)
+- ``thickness_data.<i>.<cn>``      thickness against chord fraction; the columns depend on the
+                                   distribution (see ``read_thickness``)
 - ``T-Blade3_run.log``, ``error.log``
 - ``derivative_files/xyz_ders_<g>_<f>_<cp>.dat``, ``stagger_ders_<g>_<f>.dat``, ``throat_ders_<g>_<f>.dat``
 """
@@ -23,7 +25,7 @@ import numpy as np
 from ..errors import TBlade3Error
 from ..geometry import Derivatives, Geometry
 
-__all__ = ["read_run_dir", "read_sections", "read_derivatives", "read_section_table",
+__all__ = ["read_run_dir", "read_sections", "read_derivatives", "read_section_table", "read_thickness",
            "find_casename", "find_row"]
 
 # Fortran fixed-format width of the numbers in the derivative files ('(3F22.16)' / '(nF22.16)').
@@ -273,6 +275,60 @@ def read_section_table(path: str | Path, casename: str) -> dict[str, np.ndarray]
     return table
 
 
+def _read_thickness_file(path: Path) -> np.ndarray:
+    """(n, 2): u, full thickness / chord, from one thickness_data file of any of the three formats."""
+    rows = []
+    for line in path.read_text(errors="replace").splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        if "*" in line:             # an overflowed '(4F40.16)' field runs into its neighbour: slice it
+            line = line.rstrip()
+            tokens = [line[i:i + 40] for i in range(0, len(line), 40)]
+        try:
+            rows.append([_float_or_nan(t) for t in tokens])
+        except ValueError:
+            if rows:
+                raise TBlade3Error(f"{path.name}: cannot parse row {line.strip()!r}") from None
+            continue                # header line of the spline format
+    if not rows:
+        return np.zeros((0, 2))
+    if len({len(r) for r in rows}) != 1:
+        raise TBlade3Error(f"{path.name}: rows of different lengths")
+    data = np.array(rows, dtype=float)
+    ncol = data.shape[1]
+    if ncol == 4:                   # modified NACA: u, thickness, dt/du, d2t/du2 (full thickness)
+        t = data[:, 1]
+    elif ncol == 2:                 # Wennerstrom: u, half thickness
+        t = 2.0 * data[:, 1]
+    elif ncol == 3:                 # spline: u, top, bottom
+        t = data[:, 1] - data[:, 2]
+    else:
+        raise TBlade3Error(f"{path.name}: {ncol} columns, expected 2, 3 or 4")
+    return np.column_stack([data[:, 0], t])
+
+
+def read_thickness(path: str | Path, casename: str, nsec: int) -> list[np.ndarray]:
+    """Thickness distribution of each section from ``thickness_data.<i>.<cn>``.
+
+    The files differ by thickness distribution (bladegen.f90 / file_operations.f90): modified NACA
+    writes u, thickness, dt/du, d2t/du2; Wennerstrom u and half the thickness; the spline
+    distributions a header and u, top, bottom. All become (n, 2) arrays of u and the full thickness
+    divided by the chord. Sections without a file (not 'sect1') get an empty (0, 2) array; no files
+    at all give an empty list.
+    """
+    path = Path(path)
+    rx = re.compile(r"thickness_data\.(\d+)\." + re.escape(casename))
+    found = {}
+    for p in path.glob("thickness_data.*"):
+        m = rx.fullmatch(p.name)
+        if m and 1 <= int(m.group(1)) <= nsec:
+            found[int(m.group(1))] = p
+    if not found:
+        return []
+    return [_read_thickness_file(found[i]) if i in found else np.zeros((0, 2)) for i in range(1, nsec + 1)]
+
+
 def read_run_dir(path: str | Path, casename: str | None = None, row: int | None = None,
                  derivatives: bool = True) -> Geometry:
     """Read all outputs of a finished T-Blade3 run in folder ``path`` into a ``Geometry``.
@@ -313,6 +369,7 @@ def read_run_dir(path: str | Path, casename: str | None = None, row: int | None 
         hub=optional_points(f"hub.{casename}.sldcrv", 3),
         casing=optional_points(f"casing.{casename}.sldcrv", 3),
         le_te=optional_points(f"LE_TE_intersection.{casename}.dat", 4),
+        thickness=read_thickness(path, casename, nsec),
         derivatives=(read_derivatives(path, nsec, npt)
                      if derivatives and (path / "derivative_files").is_dir() else None),
         log=_read_text(path / "T-Blade3_run.log"),

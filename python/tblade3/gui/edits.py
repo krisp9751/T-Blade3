@@ -11,7 +11,10 @@ from collections.abc import Callable
 import numpy as np
 
 from ..io.maininput import ControlTable
+from ..io.spancontrol import Table
 from .controller import Controller
+
+_KEEP = object()
 
 
 def _set_control_table(table: ControlTable, span: np.ndarray, values: dict[str, np.ndarray]) -> None:
@@ -61,3 +64,74 @@ def remove_control_point(controller: Controller, row_id: str, table_get: Callabl
     span = np.delete(table.span, index)
     values = {key: np.delete(v, index) for key, v in table.values.items()}
     replace_control_table(controller, row_id, table_get, f"Remove a {what} control point", span, values)
+
+
+# -- tables of the auxiliary file (spancontrol.Table: first column span, one row per control point) --
+
+def replace_table_data(controller: Controller, row_id: str, table_get: Callable[[], Table], data: np.ndarray,
+                       text: str) -> None:
+    """Replace all rows of a spancontrol Table (undoable)."""
+    old, new = table_get().data.copy(), np.array(data, dtype=float)
+
+    def apply(values: np.ndarray) -> None:
+        table_get().data = values.copy()
+
+    controller.edit(row_id, text, lambda: apply(new), lambda: apply(old))
+
+
+def insert_table_row(controller: Controller, row_id: str, table_get: Callable[[], Table], index: int,
+                     what: str) -> None:
+    """Add a row after row ``index`` of a spancontrol Table, halfway to the next one (undoable).
+
+    An empty table gets a row at the hub and one at the tip with zero values; a single row is
+    copied to the other end of the span.
+    """
+    data = table_get().data
+    n, ncol = data.shape
+    if n == 0:
+        new = np.zeros((2, ncol))
+        new[:, 0] = [0.0, 1.0]
+    elif n == 1:
+        other = data[0].copy()
+        other[0] = 1.0 if data[0, 0] < 1.0 else 0.0
+        new = np.vstack([data, other])
+        new = new[np.argsort(new[:, 0], kind="stable")]
+    else:
+        i = min(max(index, 0), n - 2)
+        new = np.insert(data, i + 1, 0.5 * (data[i] + data[i + 1]), axis=0)
+    replace_table_data(controller, row_id, table_get, new, f"Add a {what} control point")
+
+
+def remove_table_row(controller: Controller, row_id: str, table_get: Callable[[], Table], index: int,
+                     what: str) -> None:
+    """Remove row ``index`` of a spancontrol Table (undoable)."""
+    data = table_get().data
+    if 0 <= index < len(data):
+        replace_table_data(controller, row_id, table_get, np.delete(data, index, axis=0),
+                           f"Remove a {what} control point")
+
+
+# -- several inputs at once --------------------------------------------------------------------
+
+def set_inputs(controller: Controller, row_id: str, text: str, main: dict[str, object] | None = None,
+               aux=_KEEP) -> None:
+    """Set attributes of the row's main input and optionally replace its auxiliary input, as one undo step.
+
+    Use it for a switch that needs other data to change with it (a table the new value reads, or
+    the auxiliary file parsed for the new switches). Values are stored as given; pass new objects,
+    not ones that stay in use elsewhere.
+    """
+    main = dict(main or {})
+    row = controller.row(row_id)
+    old_main = {key: getattr(row.main, key) for key in main}
+    old_aux = row.aux
+
+    def apply(values: dict[str, object], new_aux) -> None:
+        r = controller.row(row_id)
+        for key, value in values.items():
+            setattr(r.main, key, value)
+        if new_aux is not _KEEP:
+            r.aux = new_aux
+
+    undo_aux = old_aux if aux is not _KEEP else _KEEP
+    controller.edit(row_id, text, lambda: apply(main, aux), lambda: apply(old_main, undo_aux))

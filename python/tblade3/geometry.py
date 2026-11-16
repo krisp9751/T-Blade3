@@ -35,6 +35,9 @@ class Geometry:
     hub: np.ndarray | None = None            # (n, 3) hub curve
     casing: np.ndarray | None = None         # (n, 3) casing curve
     le_te: np.ndarray | None = None          # LE/TE intersection data, as written by T-Blade3
+    # per section (n, 2): chord fraction u, full thickness / chord (thickness_data.<i>.<cn>); an empty
+    # (0, 2) array for a section T-Blade3 wrote no thickness file for (airfoil type other than sect1)
+    thickness: list[np.ndarray] = field(default_factory=list)
     derivatives: Derivatives | None = None
     log: str = ""                            # T-Blade3_run.log
     warnings: str = ""                       # error.log (warnings of a successful run)

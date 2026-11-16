@@ -9,7 +9,7 @@ import pytest
 
 from tblade3 import TBlade3Error
 from tblade3.geometry import DERIV_GROUPS
-from tblade3.io.outputs import read_derivatives, read_run_dir, read_section_table, read_sections
+from tblade3.io.outputs import read_derivatives, read_run_dir, read_section_table, read_sections, read_thickness
 
 CN = "Case7-28-8"
 
@@ -106,7 +106,7 @@ def test_missing_optional_files(tct_run_dir, tmp_path):
     g = read_run_dir(tmp_path, row=2)
     assert g.sections.shape == (21, 241, 3)
     assert g.meanlines is None and g.hub is None and g.derivatives is None
-    assert g.sections_2d == [] and g.section_table == {} and g.log == ""
+    assert g.sections_2d == [] and g.section_table == {} and g.log == "" and g.thickness == []
     assert read_section_table(tmp_path, CN) == {}
 
 
@@ -117,3 +117,29 @@ def test_no_derivatives_flag(tct_run_dir):
 def test_empty_folder(tmp_path):
     with pytest.raises(FileNotFoundError):
         read_run_dir(tmp_path)
+
+
+def test_thickness(tct_geometry):
+    """Modified NACA thickness files: u and the full thickness over the chord."""
+    t = tct_geometry.thickness
+    assert len(t) == 21 and all(s.shape == (121, 2) for s in t)
+    assert t[0][0, 0] == 0.0 and t[0][-1, 0] == 1.0
+    assert t[0][:, 1].max() == pytest.approx(0.12546, abs=1e-3)       # naca.t_max[1] of the input
+    assert t[20][:, 1].max() == pytest.approx(0.020, abs=1e-3)
+
+
+def test_thickness_formats(tmp_path):
+    u = np.linspace(0.0, 1.0, 5)
+    half = 0.05 * np.sin(np.pi * u)
+    (tmp_path / "thickness_data.1.cn").write_text("".join(f"{a:20.16f}{b:20.16f}\n" for a, b in zip(u, half)))
+    (tmp_path / "thickness_data.2.cn").write_text(
+        " u                          top_thickness                           bot_thickness\n"
+        + "".join(f" {a} {b} {-b}\n" for a, b in zip(u, half)))
+    (tmp_path / "thickness_data.4.cn").write_text(
+        "".join(f"{a:40.16f}{2 * b:40.16f}{1.0:40.16f}{'*' * 40}\n" for a, b in zip(u, half)))
+    t = read_thickness(tmp_path, "cn", 4)
+    assert len(t) == 4 and t[2].shape == (0, 2)                       # no file for section 3
+    for s in (t[0], t[1], t[3]):
+        np.testing.assert_allclose(s[:, 0], u)
+        np.testing.assert_allclose(s[:, 1], 2 * half, atol=1e-12)
+    assert read_thickness(tmp_path, "other", 4) == []
