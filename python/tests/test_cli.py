@@ -102,7 +102,9 @@ def test_export_csm_command(case_dir, tmp_path_factory, capsys):
 
 
 def _esp_root() -> Path:
-    return Path(os.environ.get("ESP_ROOT", Path.home() / "opt/ESP129/EngSketchPad"))
+    """ESP_ROOT if set, otherwise an ESP installed beside this repository (../ESP129)."""
+    beside = Path(__file__).resolve().parents[3] / "ESP129" / "EngSketchPad"
+    return Path(os.environ.get("ESP_ROOT", beside))
 
 
 @pytest.mark.skipif(not (_esp_root() / "ESPenv.sh").is_file() or not (_esp_root() / "lib" / "tblade.so").is_file(),
