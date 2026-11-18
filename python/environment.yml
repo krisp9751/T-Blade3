@@ -1,8 +1,11 @@
-# Conda environment for the tblade3 Python package and GUI.
-#   mamba env create -f python/environment.yml
-#   conda activate tblade3
+# Conda environment "tblade" for T-Blade3: Fortran compiler, the tblade3 Python package and GUI.
+# Normally made by ./install.sh in the repository root, which also builds T-Blade3 and
+# installs the `tblade` command. By hand:
+#   conda env create -f python/environment.yml
+#   conda activate tblade
+#   make code library
 #   pip install --no-deps -e python
-name: tblade3
+name: tblade
 channels:
   - conda-forge
 dependencies:
@@ -17,5 +20,9 @@ dependencies:
   - pyvistaqt
   - pyqtgraph
   - gfortran
+  # Link against glibc 2.28 so the binaries run on any Linux from RHEL 8 / glibc 2.28 on
+  # (the default sysroot is newer than AlmaLinux 9's glibc 2.34)
+  - sysroot_linux-64=2.28
   - make
   - pip
+  - setuptools

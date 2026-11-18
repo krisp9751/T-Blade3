@@ -14,6 +14,7 @@ gui = ["PySide6", "pyvista", "pyvistaqt", "pyqtgraph"]
 test = ["pytest", "pytest-qt"]
 
 [project.scripts]
+tblade = "tblade3.gui.app:main"
 tb3 = "tblade3.cli:main"
 tb3-gui = "tblade3.gui.app:main"
 
