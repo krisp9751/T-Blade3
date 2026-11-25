@@ -1,4 +1,4 @@
-"""Command line interface: ``tb3 run | params | export-csm | gui``."""
+"""Command line interface: ``tb3 run | params | export-csm | export | gui``."""
 from __future__ import annotations
 
 import argparse
@@ -65,8 +65,34 @@ def cmd_export_csm(args) -> int:
     with Case.load(args.case, engine="executable") as case:
         for name in args.dv or []:
             case.dv.add(name)
-        path = export_csm(case, args.out, all_parameters=args.all)
+        path = export_csm(case, args.out, all_parameters=args.all, hubwedge=args.hubwedge,
+                          bore_radius=args.bore_radius, dump_step=args.dump_step)
         print(f"wrote {path}")
+    return 0
+
+
+def cmd_export(args) -> int:
+    from .export_geometry import ExportRequest, export_built_row, local_names
+    with Case.load(args.case) as case:
+        if args.row is not None and args.row not in case.rows:
+            raise ValueError(f"the case has no row {args.row!r} (rows: {', '.join(case.rows)})")
+        rows = [args.row] if args.row is not None else list(case.rows)
+        if args.stem and len(rows) > 1:
+            raise ValueError("--stem names one file set; with several rows choose one with --row")
+        formats = tuple(args.formats) if args.formats else ("hgeom", "step", "brep")
+        name = next(iter(case.rows.values())).main.casename
+        for rid in rows:
+            stem = args.stem or (name if len(case.rows) == 1 else f"{name}_row{rid}")
+            request = ExportRequest(args.out, stem, tuple(args.bodies) if args.bodies else None, formats,
+                                    args.bore_radius, args.x_inlet, args.x_outlet,
+                                    tuple(local_names(case, rid, args.sens or [])))
+            row = case.rows[rid]
+            files, notes = export_built_row(case, row, row.build(derivatives=False), request)
+            print(f"row {rid}:")
+            for f in files:
+                print(f"  wrote {f}")
+            for note in notes:
+                print(f"  note: {note}")
     return 0
 
 
@@ -101,7 +127,24 @@ def main(argv: list[str] | None = None) -> int:
     csm.add_argument("--out", type=Path, help="default: <case>/<casename>.csm")
     csm.add_argument("--dv", nargs="+", metavar="NAME", help="extra design variables to flag")
     csm.add_argument("--all", action="store_true", help="export every udpTblade argument")
+    csm.add_argument("--hubwedge", action="store_true",
+                     help="add ESP's hubwedge primitive, a UNION with the blade and a bore (like tblade_rotor_hubwedge.csm)")
+    csm.add_argument("--bore-radius", type=float, default=12.7, help="bore radius with --hubwedge (default 12.7)")
+    csm.add_argument("--dump-step", metavar="NAME", help="end the script with DUMP $$/NAME (e.g. rotor.step)")
     csm.set_defaults(func=cmd_export_csm)
+
+    exp = sub.add_parser("export", help="write the B-Rep of a case (hgeom, STEP, BREP)")
+    exp.add_argument("case", type=Path, help="case folder (or one 3dbgbinput.<row>.dat)")
+    exp.add_argument("-o", "--out", type=Path, required=True, help="output folder")
+    exp.add_argument("--row", help="row id (default: every row)")
+    exp.add_argument("--stem", help="file name stem (default: the case name, with _row<id> for several rows)")
+    exp.add_argument("--bodies", nargs="+", choices=("blade", "hub_wedge", "passage", "solid", "assembly"), help="bodies to write (default: blade hub_wedge passage solid)")
+    exp.add_argument("--formats", nargs="+", choices=("hgeom", "step", "brep"), help="default: all three")
+    exp.add_argument("--bore-radius", type=float, help="radius of the bore (default: from the hub)")
+    exp.add_argument("--x-inlet", type=float, help="axial position of the inlet plane (default: from the blade)")
+    exp.add_argument("--x-outlet", type=float, help="axial position of the outlet plane (default: from the blade)")
+    exp.add_argument("--sens", nargs="+", metavar="NAME", help="parameters whose sensitivities are stored (hgeom)")
+    exp.set_defaults(func=cmd_export)
 
     gui = sub.add_parser("gui", help="open the GUI")
     gui.add_argument("case", nargs="?", type=Path)
@@ -110,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TBlade3Error, FileNotFoundError, KeyError, ValueError) as exc:
+    except (TBlade3Error, FileNotFoundError, KeyError, ValueError, NotImplementedError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

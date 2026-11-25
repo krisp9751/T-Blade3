@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QLabel, QListWidget, QL
 
 from .backend import row_surfaces
 from .controller import Controller
+from .export_dialog import ExportDialog
 from .tabs.base import RowTab
 from .tabs.flowpath import FlowPathTab
 from .view3d import View3D
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("T-Blade3")
         self.resize(1600, 950)
         self.all_blades = False
+        self.export_box: QMessageBox | None = None
         self._warnings: dict[str, str] = {}      # last warnings logged per row, to avoid repeating them
 
         # -- widgets --------------------------------------------------------------------------
@@ -90,6 +92,10 @@ class MainWindow(QMainWindow):
         c.buildFinished.connect(self._build_finished)
         c.buildFailed.connect(self._build_failed)
         c.message.connect(self._log)
+        c.brepReady.connect(self._brep_ready)
+        c.brepFailed.connect(self._brep_failed)
+        c.exportFinished.connect(self._export_finished)
+        c.exportFailed.connect(self._export_failed)
         c.undo_stack.cleanChanged.connect(lambda *_: self._update_title())
 
     # -- actions ----------------------------------------------------------------------------
@@ -118,6 +124,7 @@ class MainWindow(QMainWindow):
         action("Open…", self.open_dialog, QKeySequence.Open, menus=[menu_file])
         action("Save", lambda: self.save(), QKeySequence.Save, menus=[menu_file])
         action("Save as…", self.save_as_dialog, QKeySequence.SaveAs, menus=[menu_file], toolbar=False)
+        self.export_action = action("Export geometry…", self.export_dialog, menus=[menu_file], toolbar=False)
         bar.addSeparator()
         undo = self.controller.undo_stack.createUndoAction(self, "Undo")
         undo.setShortcut(QKeySequence.Undo)
@@ -135,6 +142,8 @@ class MainWindow(QMainWindow):
                                  menus=[menu_view])
         self.casing_action = action("Casing", lambda on: self.view.set_visibility(casing=on), checkable=True,
                                     menus=[menu_view])
+        self.brep_action = action("B-Rep faces", self._set_show_brep, checkable=True, menus=[menu_view],
+                                  toolbar=False)
         action("Reset view", self.view.reset_camera, menus=[menu_view])
 
     def _set_auto_run(self, on: bool) -> None:
@@ -147,6 +156,12 @@ class MainWindow(QMainWindow):
         for rid in (self.controller.case.rows if self.controller.case else []):
             self._show_row_geometry(rid)
         self.view.reset_camera()
+
+    def _set_show_brep(self, on: bool) -> None:
+        self.view.set_show_brep(on)
+        if on:
+            for rid in (self.controller.case.rows if self.controller.case else []):
+                self.controller.request_brep(rid)
 
     # -- files ------------------------------------------------------------------------------
     def open_dialog(self) -> None:
@@ -182,6 +197,37 @@ class MainWindow(QMainWindow):
         if folder:
             self.save(folder)
             self._update_title()
+
+    def export_dialog(self) -> ExportDialog | None:
+        """Ask what to export, then build and write it in the background; the result is shown when done."""
+        if self.controller.case is None or self.current_row is None:
+            QMessageBox.information(self, "T-Blade3", "Open a case first.")
+            return None
+        dialog = ExportDialog(self.controller, self.current_row, self)
+        dialog.accepted.connect(lambda: self._start_export(dialog))
+        dialog.open()
+        return dialog
+
+    def _start_export(self, dialog: ExportDialog) -> None:
+        self.controller.export_geometry(dialog.row_id, dialog.request())
+
+    def _export_finished(self, row_id: str, files: list, notes: list) -> None:
+        text = "Wrote:\n" + "\n".join(str(f) for f in files)
+        if notes:
+            text += "\n\nNotes:\n" + "\n".join(notes)
+        self._log(f"Row {row_id}: exported {len(files)} file(s)\n{text}")
+        box = QMessageBox(QMessageBox.Information, "T-Blade3", f"Row {row_id}: exported {len(files)} file(s).", parent=self)
+        box.setDetailedText(text)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.open()
+        self.export_box = box
+
+    def _export_failed(self, row_id: str, text: str) -> None:
+        self._log(f"Row {row_id}: export failed: {text}")
+        box = QMessageBox(QMessageBox.Critical, "T-Blade3", f"Row {row_id}: export failed:\n\n{text}", parent=self)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.open()
+        self.export_box = box
 
     def _confirm_discard(self) -> bool:
         if self.controller.case is None or self.controller.undo_stack.isClean():
@@ -247,12 +293,21 @@ class MainWindow(QMainWindow):
         self._log(f"Row {row_id}: T-Blade3 failed. The last good geometry stays on screen.\n{text}")
         self._update_status()
 
+    def _brep_ready(self, row_id: str) -> None:
+        self.view.set_brep(row_id, self.controller.brep_meshes.get(row_id))
+
+    def _brep_failed(self, row_id: str, text: str) -> None:
+        self.view.set_brep(row_id, None)
+        self._log(f"Row {row_id}: no B-Rep view: {text}")
+
     def _show_row_geometry(self, row_id: str) -> None:
         row = self.controller.row(row_id)
         if row.geometry is None:
             return
         surfaces, lines = row_surfaces(row.geometry, row.main.n_blades, self.all_blades)
         self.view.set_surfaces(row_id, surfaces, lines)
+        if self.view.show_brep:
+            self.controller.request_brep(row_id)
 
     # -- small things -----------------------------------------------------------------------
     def _item(self, row_id: str) -> QListWidgetItem | None:

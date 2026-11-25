@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 
 from ..surfaces import Surface, rotation_about_x
+from .brep_view import COLOURS as _BREP_COLOURS
+from .brep_view import role_style
 
 # Colours (light, dark theme)
 _BLADE = ("#5B7FA6", "#7FA3CC")
@@ -73,6 +75,8 @@ class View3D(QWidget):
         self._surfaces: dict[str, list[Surface]] = {}
         self._lines: dict[str, list[np.ndarray]] = {}
         self._dim: set[str] = set()
+        self._brep: dict[str, list[tuple[str, pv.PolyData]]] = {}    # key -> (face role, mesh)
+        self.show_brep = False
         self._bars: dict[str, str] = {}             # key -> title of its scalar bar
         self.show_casing = False
         self.show_hub = True
@@ -104,6 +108,21 @@ class View3D(QWidget):
         self._scalar[key] = None if values is None else (np.asarray(values), title, units)
         self._redraw(key)
 
+    def set_brep(self, key: str, meshes: list[tuple[str, pv.PolyData]] | None) -> None:
+        """The B-Rep faces of ``key`` as (role, mesh); ``None`` forgets them. Shown while ``show_brep`` is on."""
+        if meshes is None:
+            self._brep.pop(key, None)
+        else:
+            self._brep[key] = meshes
+        if key in self._surfaces:
+            self._redraw(key)
+
+    def set_show_brep(self, on: bool) -> None:
+        """Draw the B-Rep faces instead of the plain blade, hub and casing surfaces (rows that have one)."""
+        self.show_brep = on
+        for key in list(self._surfaces):
+            self._redraw(key)
+
     def set_dimmed(self, keys: set[str]) -> None:
         """Draw the blades of these keys in a muted colour (rows that are not selected)."""
         changed = keys ^ self._dim
@@ -118,6 +137,7 @@ class View3D(QWidget):
         self._surfaces.pop(key, None)
         self._lines.pop(key, None)
         self._scalar.pop(key, None)
+        self._brep.pop(key, None)
         self.plotter.render()
 
     def clear(self) -> None:
@@ -149,7 +169,8 @@ class View3D(QWidget):
         dark = int(is_dark())
         actors = []
         scalar = self._scalar.get(key)
-        for surface in self._surfaces.get(key, []):
+        brep = self._brep.get(key) if self.show_brep else None
+        for surface in ([] if brep else self._surfaces.get(key, [])):
             if surface.kind == "hub" and not self.show_hub:
                 continue
             if surface.kind == "casing" and not self.show_casing:
@@ -184,6 +205,10 @@ class View3D(QWidget):
                     if scalar[1]:
                         p.add_text(scalar[1], position="upper_left", font_size=10, color=_LINE[dark],
                                    name=f"title {key}", render=False)
+        for role, mesh in brep or []:
+            colour, opacity = role_style(role)
+            actors.append(p.add_mesh(mesh, color=_BREP_COLOURS[colour][dark], opacity=opacity, smooth_shading=True,
+                                     reset_camera=False, render=False, ambient=0.3, diffuse=0.7, specular=0.0))
         for line in self._lines.get(key, []):
             actors.append(p.add_mesh(pv.lines_from_points(line), color=_LINE[dark], line_width=2,
                                      reset_camera=False, render=False))

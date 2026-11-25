@@ -682,3 +682,101 @@ def test_unused_inputs_are_greyed(qtbot, case_dir):
     qtbot.waitUntil(lambda: row.is_current and not c.is_building("2"), timeout=BUILD)
     c.undo_stack.setClean()
     window.close()
+
+
+def test_export_dialog_request(qtbot, case_dir):
+    pytest.importorskip("pyvistaqt")
+    from tblade3.gui.export_dialog import DEFAULT_BODIES, ExportDialog
+    window = _window(qtbot, case_dir)
+    dialog = ExportDialog(window.controller, "2")
+    qtbot.addWidget(dialog)
+    request = dialog.request()
+    assert request.bodies == DEFAULT_BODIES and "step" in request.formats and "brep" in request.formats
+    assert request.stem == "Case7-28-8" and request.bore_radius is None and request.sensitivities == ()
+    assert not dialog.body_boxes["assembly"].isChecked()
+    dialog.bore_edit.setText("15.5")
+    dialog.inlet_edit.setText("-20")
+    assert (dialog.request().bore_radius, dialog.request().x_inlet, dialog.request().x_outlet) == (15.5, -20.0, None)
+    dialog.bore_edit.setText("abc")
+    with pytest.raises(ValueError, match="Bore radius"):
+        dialog.request()
+    dialog.bore_edit.clear()
+    for box in dialog.body_boxes.values():
+        box.setChecked(False)
+    with pytest.raises(ValueError, match="body"):
+        dialog.request()
+    assert not dialog.sens_box.isEnabled()              # no design variables yet
+    window.controller.set_design_variable("2", "sweep[4]", True)
+    dialog2 = ExportDialog(window.controller, "2")
+    qtbot.addWidget(dialog2)
+    dialog2.sens_box.setChecked(True)
+    assert dialog2.request().sensitivities == ("sweep[4]",)
+    window.close()
+
+
+def test_export_geometry_in_background(qtbot, case_dir, tmp_path):
+    pytest.importorskip("pyvistaqt")
+    pytest.importorskip("OCP")
+    from tblade3.export_geometry import ExportRequest
+    window = _window(qtbot, case_dir)
+    c = window.controller
+    request = ExportRequest(tmp_path / "out", "rotor", ("blade", "solid"), ("step", "brep"))
+    with qtbot.waitSignal(c.exportFinished, timeout=BUILD) as blocker:
+        c.export_geometry("2", request)
+    row_id, files, notes = blocker.args
+    assert row_id == "2" and sorted(f.name for f in files) == ["rotor.step", "rotor_blade.brep", "rotor_solid.brep"]
+    assert all(f.is_file() for f in files)
+    both = ExportRequest(tmp_path / "out", "withsens", ("blade",), ("hgeom",), sensitivities=("sweep[4]",))
+    with qtbot.waitSignal(c.exportFinished, timeout=BUILD) as blocker:
+        c.export_geometry("2", both)
+    from tblade3.brep import hgeom
+    assert "blade" in hgeom.read(blocker.args[1][0]).bodies
+    bad = ExportRequest(tmp_path / "out", "bad", ("blade",), ("brep",), bore_radius=1e6)
+    with qtbot.waitSignal(c.exportFailed, timeout=BUILD) as blocker:
+        c.export_geometry("2", bad)
+    assert blocker.args[0] == "2" and blocker.args[1]
+    window.close()
+
+
+def test_export_action_runs_dialog(qtbot, case_dir, tmp_path, monkeypatch):
+    pytest.importorskip("pyvistaqt")
+    pytest.importorskip("OCP")
+    from PySide6.QtWidgets import QMessageBox
+    window = _window(qtbot, case_dir)
+    dialog = window.export_dialog()
+    dialog.folder_edit.setText(str(tmp_path / "gui_out"))
+    for name, box in dialog.body_boxes.items():
+        box.setChecked(name == "blade")
+    for name, box in dialog.format_boxes.items():
+        box.setChecked(name == "brep")
+    with qtbot.waitSignal(window.controller.exportFinished, timeout=BUILD):
+        dialog.accept()
+    assert (tmp_path / "gui_out" / "Case7-28-8_blade.brep").is_file()
+    qtbot.waitUntil(lambda: isinstance(window.export_box, QMessageBox) and window.export_box.isVisible(), timeout=5000)
+    window.export_box.close()
+    window.close()
+
+
+def test_brep_view(qtbot, case_dir):
+    pytest.importorskip("pyvistaqt")
+    pytest.importorskip("OCP")
+    window = _window(qtbot, case_dir)
+    c, view = window.controller, window.view
+    assert not window.brep_action.isChecked() and not view.show_brep and "2" not in c.brep_meshes
+    plain = len(view._actors["2"])
+    with qtbot.waitSignal(c.brepReady, timeout=BUILD):
+        window.brep_action.trigger()
+    assert view.show_brep
+    roles = {role for role, _ in c.brep_meshes["2"]}
+    assert {"blade_suction", "blade_pressure", "hub", "casing", "periodic_lo", "inlet"} <= roles
+    assert len(view._actors["2"]) >= len(roles)
+    window.brep_action.trigger()
+    assert not view.show_brep and len(view._actors["2"]) == plain
+    window.brep_action.trigger()
+    with qtbot.waitSignal(c.buildFinished, timeout=BUILD), qtbot.waitSignal(c.brepReady, timeout=BUILD):
+        c.set_value("2", "sweep[4]", 0.05)
+    assert view.show_brep and c._brep_geometry["2"] is c.row("2").geometry
+    window.brep_action.trigger()
+    c.undo_stack.undo()
+    c.undo_stack.setClean()
+    window.close()

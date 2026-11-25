@@ -111,6 +111,10 @@ class Controller(QObject):
     buildFailed = Signal(str, str)          # row id, message with log
     sensitivityReady = Signal(str, str)     # row id, parameter name: row.dxyz(name) is available
     sensitivityFailed = Signal(str, str, str)   # row id, parameter name, message
+    brepReady = Signal(str)                 # row id: self.brep_meshes[row id] is new
+    brepFailed = Signal(str, str)           # row id, message
+    exportFinished = Signal(str, object, object)    # row id, files written (list[Path]), notes (list[str])
+    exportFailed = Signal(str, str)         # row id, message
     message = Signal(str)                   # short status text
 
     _jobDone = Signal(object)               # internal: (callback, result) from a worker thread
@@ -120,6 +124,10 @@ class Controller(QObject):
         self.case: Case | None = None
         self.undo_stack = QUndoStack(self)
         self.auto_run = True
+        self.brep_meshes: dict[str, list] = {}  # row id -> (face role, mesh) of the B-Rep, for the 3D view
+        self._brep_geometry: dict[str, object] = {}     # row id -> geometry the meshes were built from
+        self._brep_running: dict[str, bool] = {}
+        self._brep_pending: set[str] = set()
         self._rows: dict[str, _RowState] = {}
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tb3-build")
         self._merge_id = 1
@@ -148,6 +156,9 @@ class Controller(QObject):
         for state in self._rows.values():
             state.timer.stop()
         self._rows.clear()
+        self.brep_meshes.clear()
+        self._brep_geometry.clear()
+        self._brep_pending.clear()
         self.undo_stack.clear()
         if self.case is not None:
             case, self.case = self.case, None
@@ -312,6 +323,83 @@ class Controller(QObject):
                 self.sensitivityReady.emit(row_id, name)
 
         self.message.emit(f"Finite difference for {name} (2 runs)")
+        self._submit(job, done)
+
+    # -- B-Rep ------------------------------------------------------------------------------
+    def request_brep(self, row_id: str) -> None:
+        """Tessellate the B-Rep of the row's current geometry in the background (skipped if already done)."""
+        row = self.case.rows.get(row_id) if self.case else None
+        geo = row.geometry if row else None
+        if geo is None or self._brep_geometry.get(row_id) is geo:
+            return
+        if self._brep_running.get(row_id):
+            self._brep_pending.add(row_id)
+            return
+        self._brep_running[row_id] = True
+        case = self.case
+
+        def job():
+            try:
+                from .brep_view import build_meshes
+                return build_meshes(geo)
+            except Exception as exc:
+                return exc
+
+        def done(result):
+            if self.case is not case:
+                return
+            self._brep_running[row_id] = False
+            if isinstance(result, Exception):
+                self._brep_geometry[row_id] = geo       # do not retry the same geometry
+                self.brep_meshes.pop(row_id, None)
+                self.brepFailed.emit(row_id, str(result))
+            elif row.geometry is geo:
+                self._brep_geometry[row_id] = geo
+                self.brep_meshes[row_id] = result[0]
+                for note in result[1]:
+                    self.message.emit(f"Row {row_id} B-Rep: {note}")
+                self.brepReady.emit(row_id)
+            if row_id in self._brep_pending or row.geometry is not geo:
+                self._brep_pending.discard(row_id)
+                self.request_brep(row_id)
+
+        self._submit(job, done)
+
+    def export_geometry(self, row_id: str, request) -> None:
+        """Build the B-Rep of the row's current geometry and write it (``export_geometry.ExportRequest``).
+
+        Runs in the background; ends with ``exportFinished`` or ``exportFailed``.
+        """
+        from ..export_geometry import export_built_row, source_of
+        row = self.case.rows[row_id]
+        geo = row.geometry
+        if geo is None:
+            self.exportFailed.emit(row_id, "The row has not been built yet")
+            return
+        try:
+            request.source = request.source or source_of(self.case, row)
+        except Exception as exc:
+            self.exportFailed.emit(row_id, f"Cannot collect the case data: {exc}")
+            return
+        case = self.case
+        stale = not row.is_current
+        self.message.emit(f"Exporting row {row_id}…")
+
+        def job():
+            try:
+                return export_built_row(case, row, geo, request)
+            except Exception as exc:
+                return exc
+
+        def done(result):
+            if isinstance(result, Exception):
+                self.exportFailed.emit(row_id, str(result) or type(result).__name__)
+                return
+            files, notes = result
+            if stale:
+                notes = ["warning: the row had unrun edits; the last built geometry was exported", *notes]
+            self.exportFinished.emit(row_id, files, notes)
+
         self._submit(job, done)
 
     # -- thread plumbing --------------------------------------------------------------------

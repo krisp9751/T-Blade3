@@ -134,3 +134,76 @@ def test_exported_csm_builds_the_same_blade_in_esp(case_dir):
         props[name] = np.array((case_dir / f"props_{name}.txt").read_text().split(), dtype=float)
     assert props["plain"][0] > 1000.0                   # a solid blade, mm^3
     assert np.allclose(props["all"], props["plain"], rtol=1e-9, atol=1e-9), props
+
+
+def test_csm_hubwedge_text(case_dir):
+    with Case.load(case_dir) as case:
+        assert "hubwedge" not in csm_text(case) and "SUBTRACT" not in csm_text(case)
+        text = csm_text(case, hubwedge=True, bore_radius=15.0, dump_step="rotor.step")
+    lines = [ln.split() for ln in text.splitlines() if ln.strip()]
+    firsts = [ln[0] for ln in lines]
+    assert firsts.count("UDPRIM") == 2 and "UNION" in firsts and "SUBTRACT" in firsts
+    assert ["UDPRIM", "hubwedge", "filename", "$$/3dbgbinput.2.dat", "\\"] in lines
+    assert ["CYLINDER", "-100", "0", "0", "1000", "0", "0", "15"] in lines
+    assert ["DUMP", "$$/rotor.step"] in lines
+    assert firsts.index("UDPRIM") < firsts.index("UNION") < firsts.index("CYLINDER") < firsts.index("SUBTRACT")
+    assert "revolved hub-section meanline" in text and "tblade3.brep" in text
+    assert text.rstrip().endswith("END") and "ncp" in text
+
+
+def test_export_csm_hubwedge_command(case_dir, capsys):
+    out = case_dir / "wedge.csm"
+    assert main(["export-csm", str(case_dir), "--out", str(out), "--hubwedge", "--dump-step", "w.step"]) == 0
+    text = out.read_text()
+    assert "UDPRIM    hubwedge" in text and "CYLINDER  -100 0 0 1000 0 0 12.7" in text and "DUMP      $$/w.step" in text
+
+
+@pytest.mark.skipif(not (_esp_root() / "ESPenv.sh").is_file() or not (_esp_root() / "lib" / "hubwedge.so").is_file(),
+                    reason="ESP with the hubwedge UDP is not installed")
+def test_hubwedge_csm_builds_one_body_in_esp(case_dir):
+    from tblade3.io.csm import export_csm
+    with Case.load(case_dir) as case:
+        export_csm(case, case_dir / "wedge.csm", hubwedge=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CONDA")}
+    env["PATH"] = ":".join(p for p in env.get("PATH", "").split(":") if "miniforge" not in p and "conda" not in p)
+    path = case_dir / "wedge.csm"
+    proc = subprocess.run(["bash", "-c", f"source {_esp_root()}/ESPenv.sh >/dev/null && serveESP wedge.csm -batch"],
+                          cwd=case_dir, env=env, capture_output=True, text=True, timeout=600)
+    log = proc.stdout + proc.stderr
+    assert proc.returncode == 0, log[-3000:]
+    table = log.split("Mass properties of Bodys on stack")[1].split("Output Parameters")[0].splitlines()[2:]
+    rows = [ln.split() for ln in table if ln.strip()]
+    assert len(rows) == 1 and float(rows[0][1]) > 0.0       # one body on the stack, positive volume
+
+
+def test_export_command(case_dir, tmp_path, capsys):
+    pytest.importorskip("OCP")
+    out = tmp_path / "out"
+    code = main(["export", str(case_dir), "-o", str(out), "--bodies", "blade", "solid", "--formats", "step", "brep"])
+    text = capsys.readouterr().out
+    assert code == 0, text
+    assert (out / "Case7-28-8.step").is_file() or len(list(out.glob("*.step"))) == 1
+    step = next(out.glob("*.step"))
+    assert sorted(p.name for p in out.glob("*.brep")) == [f"{step.stem}_blade.brep", f"{step.stem}_solid.brep"]
+    assert "wrote" in text and "row 2" in text
+
+
+def test_export_command_hgeom_and_sensitivities(case_dir, tmp_path, capsys):
+    pytest.importorskip("OCP")
+    from tblade3.brep import hgeom
+    out = tmp_path / "out"
+    assert main(["export", str(case_dir), "-o", str(out), "--bodies", "blade", "--formats", "hgeom",
+                 "--sens", "row2.sweep[4]"]) == 0
+    files = list(out.glob("*.hgeom"))
+    assert len(files) == 1
+    assert "blade" in hgeom.read(files[0]).bodies
+
+
+def test_export_command_errors(case_dir, tmp_path, capsys):
+    pytest.importorskip("OCP")
+    assert main(["export", str(case_dir), "-o", str(tmp_path), "--row", "9"]) == 1
+    assert "no row" in capsys.readouterr().err
+    assert main(["export", str(case_dir), "-o", str(tmp_path / "o"), "--bore-radius", "1e6", "--formats", "brep"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Traceback" not in err
+    assert main(["export", str(case_dir / "missing"), "-o", str(tmp_path)]) == 1
