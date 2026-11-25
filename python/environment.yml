@@ -19,6 +19,8 @@ dependencies:
   - pyvista
   - pyvistaqt
   - pyqtgraph
+  # OpenCASCADE (B-Rep geometry, STEP and .brep export: tblade3.brep)
+  - ocp
   - gfortran
   # Link against glibc 2.28 so the binaries run on any Linux from RHEL 8 / glibc 2.28 on
   # (the default sysroot is newer than AlmaLinux 9's glibc 2.34)

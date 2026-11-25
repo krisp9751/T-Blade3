@@ -11,6 +11,7 @@ dependencies = ["numpy", "scipy", "pyyaml"]
 
 [project.optional-dependencies]
 gui = ["PySide6", "pyvista", "pyvistaqt", "pyqtgraph"]
+cad = ["cadquery-ocp"]
 test = ["pytest", "pytest-qt"]
 
 [project.scripts]
