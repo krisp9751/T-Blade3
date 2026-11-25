@@ -65,6 +65,12 @@ WEDGE_OUTLET = "wedge_outlet"
 
 BODY_NAMES = ("blade", "hub_wedge", "passage", "solid", "assembly")
 
+# the surface each face lies on (keys of RowBrep.surfaces; the tip is the casing when it touches it)
+FACE_SURFACE = {BLADE_SUCTION: "blade_ss", BLADE_PRESSURE: "blade_ps", BLADE_ROOT: "hub", BLADE_TIP: "tip",
+                HUB: "hub", CASING: "casing", BORE: "bore", PERIODIC_LO: "periodic_lo",
+                PERIODIC_HI: "periodic_hi", WEDGE_PERIODIC_LO: "periodic_lo", WEDGE_PERIODIC_HI: "periodic_hi",
+                INLET: "inlet", OUTLET: "outlet", WEDGE_INLET: "inlet", WEDGE_OUTLET: "outlet"}
+
 
 @dataclass
 class BuildOptions:
@@ -194,6 +200,7 @@ class SheetSurface:
     v_hub: float
     v_casing: float
     half_pitch: float
+    bore: float
 
 
 def nblades_of(geo: Geometry) -> int:
@@ -267,25 +274,38 @@ def sheet_surface(geo: Geometry, hub: Streamline, casing: Streamline, nb: int, x
     dr = ds * float((rc - rh).mean())
     k = max(2, math.ceil(float((rh - bore).mean()) / dr))
     rows: list[tuple[str, int, float]] = [("bore", 0, 0.0)]
-    pts = [cart(xs, np.full_like(xs, bore), t[0])]
-    for i in range(1, k):
-        f = i / k
-        rows.append(("sub", 0, f))
-        pts.append(cart(xs, bore + f * (rh - bore), t[0]))
+    rows += [("sub", 0, i / k) for i in range(1, k)]
     rows.append(("hub", 0, 0.0))
-    pts.append(cart(xs, rh, t[0]))
-    for j in inner:
-        rows.append(("meanline", j, 0.0))
-        pts.append(cart(xs, rh + s[j] * (rc - rh), t[j]))
+    rows += [("meanline", j, 0.0) for j in inner]
     rows.append(("casing", nsec - 1, 0.0))
-    pts.append(cart(xs, rc, t[-1]))
+    grid = sheet_grid(geo, hub, casing, xs, bore, rows)
+    srf, si = nurbs.interpolate_surface(grid, "natural", "natural")
+    pv = si.v.params
+    return SheetSurface(xs, grid, srf, si, rows, float(pv[0]), float(pv[k]), float(pv[-1]), math.pi / nb, bore)
+
+
+def sheet_grid(geo: Geometry, hub: Streamline, casing: Streamline, xs: np.ndarray, bore: float,
+               rows: list[tuple[str, int, float]]) -> np.ndarray:
+    """The sheet's data points (nx, nrows, 3) for a row layout (also used for derivatives)."""
+    s, t, rh, rc = meanline_rows(geo, hub, casing, xs)
+    pts = []
+    for kind, j, f in rows:
+        if kind == "bore":
+            r = np.full_like(xs, bore)
+        elif kind == "sub":
+            r = bore + f * (rh - bore)
+        elif kind == "hub":
+            r = rh
+        elif kind == "casing":
+            r = rc
+        else:
+            r = rh + s[j] * (rc - rh)
+        pts.append(cart(xs, r, t[j]))
     grid = np.stack(pts, axis=1)
     r = np.hypot(grid[..., 1], grid[..., 2])
     if np.any(np.diff(r, axis=1) <= 0):
         raise ValueError("periodic sheet rows cross (meanlines out of radial order)")
-    srf, si = nurbs.interpolate_surface(grid, "natural", "natural")
-    pv = si.v.params
-    return SheetSurface(xs, grid, srf, si, rows, float(pv[0]), float(pv[k]), float(pv[-1]), math.pi / nb)
+    return grid
 
 
 def rotated(srf: nurbs.Surface, delta: float) -> nurbs.Surface:
