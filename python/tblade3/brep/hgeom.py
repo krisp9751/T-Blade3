@@ -1,4 +1,4 @@
-"""``.hgeom``: HANGAR's exact geometry format (version 0).
+"""``.hgeom``: HANGAR's exact geometry format (version 1; version 0 files are still read).
 
 One zip file holding:
 
@@ -7,7 +7,12 @@ One zip file holding:
   (solids as shells of oriented faces), and the sensitivity index;
 - ``arrays.npz``: every number array the manifest refers to by key (control points, knots, weights,
   vertex coordinates, sensitivities);
-- ``source/<name>``: the T-Blade3 input files the geometry was built from.
+- ``source/<name>``: the T-Blade3 input files the geometry was built from;
+- ``brep/<body>.brep`` (version 1): each body as OpenCASCADE .brep text, for readers without OCC's API
+  (gmsh). Its faces are matched to the manifest's by ``centroid`` and ``area`` (version 1, per face).
+
+Version 1 also adds ``blade`` (``u_le``, ``u_range``, ``v_range`` of the blade surface; u runs around the
+section, v from root to tip).
 
 Nothing is converted: B-spline surfaces and curves are stored with their own control points and knots
 (the ones ``tblade3.brep.nurbs`` computed), revolved surfaces as their generatrix and axis, cylinders and
@@ -56,7 +61,7 @@ from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Face, TopoDS_Shell, TopoD
 from . import nurbs, occ
 
 FORMAT = "hgeom"
-VERSION = 0
+VERSION = 1
 
 
 # ---------------------------------------------------------------------------------------------- write
@@ -134,7 +139,8 @@ def write(row, path: str | Path, bodies=None, sensitivities=None, source: dict |
         for w in _sub(ff, TopAbs_WIRE):
             loops.append([[_index(edges, TopoDS.Edge(e)), _ori(e)] for e in _sub(w, TopAbs_EDGE)])
         face_out.append({"surface": _face_surface(row, f), "role": row.role(f),
-                         "tolerance": float(BRep_Tool.Tolerance_s(f)), "loops": loops})
+                         "tolerance": float(BRep_Tool.Tolerance_s(f)), "loops": loops,
+                         "centroid": [float(c) for c in _face_centroid(f)], "area": float(occ.area(f))})
         face_ids[i] = ff
 
     edge_out = []
@@ -161,6 +167,9 @@ def write(row, path: str | Path, bodies=None, sensitivities=None, source: dict |
         "row": {"nblades": int(row.nblades), "bore_radius": float(row.bore_radius),
                 "x_inlet": float(row.x_inlet), "x_outlet": float(row.x_outlet), "seam": float(row.seam),
                 "tip_on_casing": bool(row.blade_surface.tip_on_casing)},
+        "blade": {"u_le": float(row.blade_surface.u_le),
+                  "u_range": [float(t) for t in row.blade_surface.surface.urange],
+                  "v_range": [float(t) for t in row.blade_surface.surface.vrange]},
         "notes": list(row.notes),
         "source": {},
         "surfaces": surfaces,
@@ -191,7 +200,29 @@ def write(row, path: str | Path, bodies=None, sensitivities=None, source: dict |
         z.writestr("arrays.npz", buf.getvalue())
         for name, text in files.items():
             z.writestr(f"source/{name}", text)
+        for b in bodies:
+            z.writestr(f"brep/{b}.brep", _brep_text(row.bodies[b]))
     return path
+
+
+def _face_centroid(face) -> np.ndarray:
+    """Area centroid of a face (``occ.centroid`` integrates a volume and is meant for solids)."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    p = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, p, occ.GPROP_EPS)
+    return np.array(occ._xyz(p.CentreOfMass()))
+
+
+def _brep_text(shape) -> str:
+    """The OpenCASCADE .brep text of a shape (for readers without OCC's API, e.g. gmsh)."""
+    import tempfile
+    from OCP.BRepTools import BRepTools
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "body.brep"
+        if not BRepTools.Write_s(shape, str(p)):
+            raise OSError("could not write the .brep text")
+        return p.read_text()
 
 
 def _plain(obj):

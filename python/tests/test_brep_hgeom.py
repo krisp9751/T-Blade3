@@ -105,3 +105,24 @@ def test_sensitivity_moves_the_surface(row, sens):
     d = nurbs.Surface(bs.surface.uknots, bs.surface.vknots, sens.surfaces["blade_ss"][k])
     assert np.abs(d.grid([0.3], [0.5])).max() > 1.0
     assert np.abs(sens.surfaces["periodic_lo"][k]).max() > 1.0
+
+
+def test_version1_embedded_brep_and_face_centroids(row, tmp_path):
+    """v1: each body's .brep text (for gmsh) and per-face centroid/area to match its faces."""
+    p = hgeom.write(row, tmp_path / "v1.hgeom", bodies=["blade", "hub_wedge"])
+    with zipfile.ZipFile(p) as z:
+        m = yaml.safe_load(z.read("manifest.yaml"))
+        texts = {b: z.read(f"brep/{b}.brep").decode() for b in ("blade", "hub_wedge")}
+    assert m["version"] == 1
+    assert m["blade"]["u_range"][0] < m["blade"]["u_le"] < m["blade"]["u_range"][1]
+    for b, text in texts.items():
+        f = tmp_path / f"{b}.brep"
+        f.write_text(text)
+        shape = export.read_brep(f)
+        assert occ.volume(shape) == pytest.approx(occ.volume(row.bodies[b]), rel=1e-12)
+        recs = [m["faces"][i] for sol in m["bodies"][b]["solids"] for sh in sol["shells"] for i, _ in sh]
+        for face in occ.explore(shape, "face"):
+            c, a = hgeom._face_centroid(face), occ.area(face)
+            hits = [r for r in recs if np.linalg.norm(np.array(r["centroid"]) - c) < 1e-6
+                    and abs(r["area"] - a) < 1e-6 * a]
+            assert len(hits) == 1
