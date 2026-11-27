@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=T-Blade3
+Comment=T-Blade3 blade design GUI
+Exec=/home/krisp/Projects/FEA/T-Blade3/scripts/launch_tblade3_gui.sh
+Icon=/home/krisp/Projects/FEA/HANGAR/hangar/gui/icons/edit_tblade3.svg
+Terminal=false
+Categories=Science;Engineering;
